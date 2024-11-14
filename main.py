@@ -8,12 +8,12 @@ from printer import Printer, PrinterAPI
 class WebViewClient:
     def __init__(self):
         self.window = None
-        self.username = Config.USERNAME
-        self.password = Config.PASSWORD
         self.app_token = None
         self.printer = None
         self.connected = False
-        self.base_url = Config.BASE_URL
+        self.username = Config().settings.username
+        self.password = Config().settings.password
+        self.base_url = Config().settings.base_url
 
         # Tentative d'obtention du token au démarrage
         try:
@@ -30,11 +30,9 @@ class WebViewClient:
         self.printer_api = PrinterAPI(self.printer)
 
         self.window = webview.create_window(
-            title=Config.WINDOW_TITLE,
-            url=Config.URL,
-            width=Config.WINDOW_WIDTH,
-            height=Config.WINDOW_HEIGHT,
-            fullscreen=Config.FULLSCREEN,
+            title="PharmaFile",
+            url=f"{self.base_url}/patient",
+            fullscreen=False,
             js_api=self.printer_api  # Exposer l'API à JavaScript
         )
         
@@ -44,7 +42,7 @@ class WebViewClient:
     def get_app_token(self, max_retries=3, retry_delay=2):
         """Obtient le token d'application avec système de retry"""
         url = f'{self.base_url}/api/get_app_token'
-        data = {'app_secret': Config.APP_SECRET}
+        data = {'app_secret': Config().settings.app_secret}
         
         for attempt in range(max_retries):
             try:
@@ -67,9 +65,9 @@ class WebViewClient:
         """Initialise l'imprimante une fois le token obtenu"""
         if self.app_token:
             self.printer = Printer(
-                Config.PRINTER_ID_VENDOR,
-                Config.PRINTER_ID_PRODUCT,
-                Config.PRINTER_MODEL,
+                Config().settings.printer_id_vendor,
+                Config().settings.printer_id_product,
+                Config().settings.printer_model,
                 self.base_url,
                 self.app_token
             )
@@ -135,7 +133,7 @@ class WebViewClient:
     def run(self):
         """Lance l'application WebView"""
         self.create_window()
-        webview.start(debug=Config.DEBUG)
+        webview.start(debug=True)
 
 if __name__ == '__main__':
     client = WebViewClient()

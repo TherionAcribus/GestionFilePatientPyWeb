@@ -7,7 +7,7 @@ from requests.exceptions import RequestException
 import queue
 import time
 
-class MinimalAPI:
+class PrinterAPI:
     """API minimaliste pour PyWebView"""
     def __init__(self):
         self._print_callback = None
@@ -31,36 +31,6 @@ class MinimalAPI:
             'message': 'Système d\'impression non initialisé'
         }
 
-
-
-class PrinterAPI:
-    """Version simplifiée de l'API pour éviter les problèmes de sérialisation"""
-    def __init__(self):
-        self.printer = None
-
-    def set_printer(self, printer):
-        """Permet de définir l'imprimante après l'initialisation"""
-        self.printer = printer
-
-    def print_ticket(self, print_data):
-        """Méthode exposée à JavaScript pour l'impression"""
-        try:
-            if self.printer is None:
-                return {
-                    'success': False,
-                    'message': 'Imprimante non initialisée'
-                }
-            success = self.printer.print(print_data)
-            return {
-                'success': success,
-                'message': 'Impression réussie' if success else 'Échec de l\'impression'
-            }
-        except Exception as e:
-            return {
-                'success': False,
-                'message': f'Erreur : {str(e)}'
-            }
-        
 
 class PrinterStatusThread(threading.Thread):
     def __init__(self, url, headers, status_queue):

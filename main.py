@@ -3,7 +3,33 @@ from config import Config
 import requests
 from requests.exceptions import RequestException
 import time
-from printer import Printer, PrinterAPI, MinimalAPI
+from printer import Printer, PrinterAPI
+
+
+class WindowControlAPI:
+    """API pour la gestion des contrôles de la fenêtre"""
+    def __init__(self):
+        self._fullscreen_callback = None
+
+    def set_fullscreen_callback(self, callback):
+        """Définit la fonction de callback pour le plein écran"""
+        self._fullscreen_callback = callback
+
+    def toggle_fullscreen(self):
+        """Méthode exposée à JavaScript pour basculer le plein écran"""
+        if self._fullscreen_callback:
+            try:
+                return self._fullscreen_callback()
+            except Exception as e:
+                return {
+                    'success': False,
+                    'message': f'Erreur de plein écran : {str(e)}'
+                }
+        return {
+            'success': False,
+            'message': 'Gestion du plein écran non initialisée'
+        }
+
 
 class WebViewClient:
     def __init__(self):
@@ -14,9 +40,11 @@ class WebViewClient:
         self.username = Config().settings.username
         self.password = Config().settings.password
         self.base_url = Config().settings.base_url
+        self.is_fullscreen = Config().settings.fullscreen
 
-        # Création de l'API minimale
-        self.js_api = MinimalAPI()
+        # Création des APIs
+        self.printer_api = PrinterAPI()
+        self.window_api = WindowControlAPI()
 
         # Tentative d'obtention du token au démarrage
         try:
@@ -30,12 +58,20 @@ class WebViewClient:
 
     def create_window(self):
         """Crée et configure la fenêtre WebView"""
+        self.window_api.set_fullscreen_callback(self.toggle_fullscreen)
+
+        class CombinedAPI:
+            def __init__(self, printer_api, window_api):
+                self.printer = printer_api
+                self.window = window_api
+
+        combined_api = CombinedAPI(self.printer_api, self.window_api)
 
         self.window = webview.create_window(
             title="PharmaFile",
             url=f"{self.base_url}/patient",
-            fullscreen=False,
-            js_api=self.js_api  # Exposer l'API à JavaScript
+            fullscreen=Config().settings.fullscreen,
+            js_api=combined_api
         )
         
         # Ajout des gestionnaires d'événements
@@ -74,7 +110,7 @@ class WebViewClient:
                 self.app_token
             )
             # Une fois l'imprimante initialisée, on la passe à l'API
-            self.js_api.set_print_callback(self.printer.print)
+            self.printer_api.set_print_callback(self.printer.print)
         else:
             raise Exception("Tentative d'initialisation de l'imprimante sans token")
 
@@ -83,8 +119,40 @@ class WebViewClient:
         """Gestionnaire d'événement pour le chargement de la page"""
         current_url = self.window.get_current_url()
         print("Page loaded:", current_url)
+
+        # Injecte le gestionnaire de touches
+        self.inject_keyboard_handler()
+
         if "login" in current_url:
             self.inject_login_script()
+
+    def toggle_fullscreen(self):
+        """Gère le basculement du mode plein écran"""
+        try:
+            self.is_fullscreen = not self.is_fullscreen
+            self.window.toggle_fullscreen()
+            return {
+                'success': True,
+                'message': 'Mode plein écran basculé avec succès',
+                'is_fullscreen': self.is_fullscreen
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Erreur lors du basculement du mode plein écran : {str(e)}'
+            }
+        
+    def inject_keyboard_handler(self):
+        """Injecte le gestionnaire de touches F11"""
+        script = """
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'F11') {
+                event.preventDefault();  // Empêche le comportement par défaut du navigateur
+                window.pywebview.api.window.toggle_fullscreen();
+            }
+        });
+        """
+        self.window.evaluate_js(script)
 
     def inject_login_script(self):
         """Injecte et exécute le script de connexion automatique"""

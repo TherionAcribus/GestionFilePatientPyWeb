@@ -82,24 +82,28 @@ class WebViewClient:
         
         # Ajout des gestionnaires d'événements
         self.window.events.loaded += self.on_loaded
-        self.window.events.loaded += self.on_webview_loaded
+        self.window.events.loaded += lambda: disable_context_menu()
 
-    # Après la création de la fenêtre, on accède au widget WebKit natif
-    def on_webview_loaded(self):
-        # Accès au widget WebKit natif
-        try:
-            # Pour GTK WebKit2
-            webview_widget = self.window.gui.webview
-            settings = webview_widget.get_settings()
-            settings.set_enable_write_console_messages_to_stdout(False)
-            settings.set_enable_default_context_menu(False)  # Désactive le menu contextuel
-            
-            # Vous pouvez aussi essayer d'ajouter ces propriétés
-            settings.set_enable_accelerated_2d_canvas(False)
-            settings.set_enable_smooth_scrolling(False)
-            settings.set_enable_webaudio(False)
-        except Exception as e:
-            print(f"Erreur lors de la configuration du WebView: {e}")
+        # Injection de code JS pour désactiver le menu contextuel
+        def disable_context_menu():
+            js_code = """
+            if (!window._contextMenuDisabled) {
+                window.addEventListener('contextmenu', function(e) {
+                    e.preventDefault();
+                    return false;
+                }, true);
+                
+                window.addEventListener('touchstart', function(e) {
+                    if (e.touches.length > 1) {
+                        e.preventDefault();
+                        return false;
+                    }
+                }, true);
+                
+                window._contextMenuDisabled = true;
+            }
+            """
+            self.window.evaluate_js(js_code)
 
     def get_app_token(self, max_retries=3, retry_delay=2):
         """Obtient le token d'application avec système de retry"""

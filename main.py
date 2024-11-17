@@ -42,6 +42,8 @@ class WebViewClient:
         self.base_url = Config().settings.base_url
         self.is_fullscreen = Config().settings.fullscreen
 
+        self._protection_injected = False
+
         self.socket_client = None
         if Config().settings.websocket_enabled:
             self.start_websocket_client()
@@ -124,6 +126,9 @@ class WebViewClient:
         current_url = self.window.get_current_url()
         print("Page loaded:", current_url)
 
+        if not self._protection_injected:
+            self.inject_kiosk_protection()
+
         # Injecte le gestionnaire de touches
         self.inject_keyboard_handler()
 
@@ -157,6 +162,25 @@ class WebViewClient:
         });
         """
         self.window.evaluate_js(script)
+
+    def inject_kiosk_protection(self):
+        """Injecte les protections basiques pour le mode kiosque (clic droit et appui long)"""
+        protection_script = """
+        // Bloque le menu contextuel (clic droit)
+        document.addEventListener('contextmenu', function(e) {
+            e.preventDefault();
+            return false;
+        }, false);
+        
+        // Bloque l'appui long sur écran tactile
+        document.addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            return false;
+        }, {passive: false});
+        """
+        self.window.evaluate_js(protection_script)
+        self._protection_injected = True
+        
 
     def inject_login_script(self):
         """Injecte et exécute le script de connexion automatique"""

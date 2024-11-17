@@ -82,6 +82,24 @@ class WebViewClient:
         
         # Ajout des gestionnaires d'événements
         self.window.events.loaded += self.on_loaded
+        self.window.events.loaded += self.on_webview_loaded
+
+    # Après la création de la fenêtre, on accède au widget WebKit natif
+    def on_webview_loaded(self):
+        # Accès au widget WebKit natif
+        try:
+            # Pour GTK WebKit2
+            webview_widget = self.window.gui.webview
+            settings = webview_widget.get_settings()
+            settings.set_enable_write_console_messages_to_stdout(False)
+            settings.set_enable_default_context_menu(False)  # Désactive le menu contextuel
+            
+            # Vous pouvez aussi essayer d'ajouter ces propriétés
+            settings.set_enable_accelerated_2d_canvas(False)
+            settings.set_enable_smooth_scrolling(False)
+            settings.set_enable_webaudio(False)
+        except Exception as e:
+            print(f"Erreur lors de la configuration du WebView: {e}")
 
     def get_app_token(self, max_retries=3, retry_delay=2):
         """Obtient le token d'application avec système de retry"""
@@ -180,7 +198,7 @@ class WebViewClient:
         """
         self.window.evaluate_js(protection_script)
         self._protection_injected = True
-        
+
 
     def inject_login_script(self):
         """Injecte et exécute le script de connexion automatique"""

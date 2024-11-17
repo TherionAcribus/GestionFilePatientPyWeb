@@ -7,5 +7,7 @@
     "printer_id_vendor": "0x04b8",
     "printer_id_product": "0x0202",
     "printer_model": "TM-T88II",
-    "app_secret": "votre_secret_app"
+    "app_secret": "votre_secret_app",
+    "websocket_enabled": false,
+    "websocket_debug": false
 }

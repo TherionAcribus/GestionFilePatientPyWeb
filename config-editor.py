@@ -43,6 +43,8 @@ class ConfigEditor(tk.Tk):
         fields = [
             ("Serveur", [
                 ("base_url", "URL racine:", str),
+                ("websocket_enabled", "Activer le WebSocket:", bool),
+                ("websocket_debug", "Activer le mode debug de WebSocket:", bool),
             ]),
             ("Fenêtre", [
                 ("fullscreen", "Plein écran:", bool),

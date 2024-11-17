@@ -4,7 +4,7 @@ import requests
 from requests.exceptions import RequestException
 import time
 from printer import Printer, PrinterAPI
-
+from websocket_client import WebSocketClient
 
 class WindowControlAPI:
     """API pour la gestion des contrôles de la fenêtre"""
@@ -41,6 +41,10 @@ class WebViewClient:
         self.password = Config().settings.password
         self.base_url = Config().settings.base_url
         self.is_fullscreen = Config().settings.fullscreen
+
+        self.socket_client = None
+        if Config().settings.websocket_enabled:
+            self.start_websocket_client()
 
         # Création des APIs
         self.printer_api = PrinterAPI()
@@ -202,10 +206,38 @@ class WebViewClient:
         """
         self.window.evaluate_js(script)
 
+    def start_websocket_client(self):
+        """Démarre le client WebSocket si activé"""
+        try:
+            if not self.socket_client:
+                print("Démarrage du client WebSocket...")
+                self.socket_client = WebSocketClient(
+                    web_url=self.base_url,
+                    print_callback=self.handle_websocket_print,
+                    debug=Config().settings.websocket_debug
+                )
+                self.socket_client.start()
+        except Exception as e:
+            print(f"Erreur lors du démarrage du WebSocket: {e}")
+
+    def handle_websocket_print(self, data):
+        """Gère l'impression via WebSocket"""
+        try:
+            if self.printer:
+                self.printer.print(data)
+            else:
+                print("Impression WebSocket impossible: imprimante non initialisée")
+        except Exception as e:
+            print(f"Erreur lors de l'impression WebSocket: {e}")
+
     def run(self):
-        """Lance l'application WebView"""
-        self.create_window()
-        webview.start(debug=True)
+        """Lance l'application"""
+        try:
+            self.create_window()
+            webview.start(debug=Config().settings.debug)
+        finally:
+            if self.socket_client:
+                self.socket_client.stop()
 
 if __name__ == '__main__':
     client = WebViewClient()

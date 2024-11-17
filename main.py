@@ -77,7 +77,9 @@ class WebViewClient:
             title="PharmaFile",
             url=f"{self.base_url}/patient",
             fullscreen=Config().settings.fullscreen,
-            js_api=combined_api
+            js_api=combined_api,
+            background_color='#FFFFFF',
+            frameless=self.is_fullscreen,
         )
         
         # Ajout des gestionnaires d'événements

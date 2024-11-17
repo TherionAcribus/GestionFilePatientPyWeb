@@ -27,7 +27,6 @@ class WebViewClient:
 
     def create_window(self):
         """Crée et configure la fenêtre WebView"""
-        self.printer_api = PrinterAPI(self.printer)
 
         self.window = webview.create_window(
             title="PharmaFile",
@@ -71,6 +70,8 @@ class WebViewClient:
                 self.base_url,
                 self.app_token
             )
+            # Une fois l'imprimante initialisée, on la passe à l'API
+            self.printer_api.set_printer(self.printer)
         else:
             raise Exception("Tentative d'initialisation de l'imprimante sans token")
 

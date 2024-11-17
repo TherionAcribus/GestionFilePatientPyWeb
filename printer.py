@@ -9,7 +9,12 @@ import time
 
 
 class PrinterAPI:
-    def __init__(self, printer):
+    """Version simplifiée de l'API pour éviter les problèmes de sérialisation"""
+    def __init__(self):
+        self.printer = None
+
+    def set_printer(self, printer):
+        """Permet de définir l'imprimante après l'initialisation"""
         self.printer = printer
 
     def print_ticket(self, print_data):
@@ -24,20 +29,6 @@ class PrinterAPI:
             return {
                 'success': success,
                 'message': 'Impression réussie' if success else 'Échec de l\'impression'
-            }
-        except ValueError as e:
-            if "langid" in str(e):
-                error_msg = ('Erreur de permissions USB. Vérifiez les droits d\'accès ou exécutez:\n'
-                           'sudo usermod -a -G dialout $USER\n'
-                           'puis déconnectez-vous et reconnectez-vous')
-                print(error_msg)
-                return {
-                    'success': False,
-                    'message': error_msg
-                }
-            return {
-                'success': False,
-                'message': f'Erreur de valeur : {str(e)}'
             }
         except Exception as e:
             return {

@@ -5,6 +5,8 @@ from requests.exceptions import RequestException
 import time
 from printer import Printer, PrinterAPI
 from websocket_client import WebSocketClient
+import os
+
 
 class WindowControlAPI:
     """API pour la gestion des contrôles de la fenêtre"""
@@ -41,6 +43,13 @@ class WebViewClient:
         self.password = Config().settings.password
         self.base_url = Config().settings.base_url
         self.is_fullscreen = Config().settings.fullscreen
+
+        # Ajout des configurations d'optimisation
+        self.webview_settings = {
+            'text_select': False,
+            'localization': False
+        }
+
 
         self._protection_injected = False
 
@@ -79,7 +88,7 @@ class WebViewClient:
             fullscreen=Config().settings.fullscreen,
             js_api=combined_api,
             background_color='#FFFFFF',
-            frameless=self.is_fullscreen,
+            **self.webview_settings  # Applique les configurations d'optimisation
         )
         
         # Ajout des gestionnaires d'événements
@@ -281,6 +290,8 @@ class WebViewClient:
     def run(self):
         """Lance l'application"""
         try:
+            os.environ['WEBKIT_DISABLE_COMPOSITING_MODE'] = '1'
+            os.environ['WEBKIT_FORCE_ACCELERATED_COMPOSITING'] = '1'
             self.create_window()
             webview.start(debug=Config().settings.debug)
         finally:

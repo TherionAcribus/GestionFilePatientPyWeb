@@ -14,6 +14,7 @@ class WebViewClient:
         self.username = Config().settings.username
         self.password = Config().settings.password
         self.base_url = Config().settings.base_url
+        self.printer_api = PrinterAPI()
 
         # Tentative d'obtention du token au démarrage
         try:

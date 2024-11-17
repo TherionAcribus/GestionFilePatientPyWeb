@@ -42,13 +42,9 @@ class ConfigEditor(tk.Tk):
         # Création des champs
         fields = [
             ("Serveur", [
-                ("host", "Hôte:", str),
-                ("port", "Port:", int),
+                ("base_url", "URL racine:", str),
             ]),
             ("Fenêtre", [
-                ("window_title", "Titre:", str),
-                ("window_width", "Largeur:", int),
-                ("window_height", "Hauteur:", int),
                 ("fullscreen", "Plein écran:", bool),
                 ("debug", "Mode debug:", bool),
             ]),

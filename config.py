@@ -6,11 +6,9 @@ from dataclasses import dataclass, asdict
 @dataclass
 class Settings:
     """Structure des paramètres de l'application"""
-    host: str = "localhost"
-    port: int = 5000
-    window_title: str = "File d'attente"
-    window_width: int = 1024
-    window_height: int = 768
+    base_url: str = "http://localhost:5000"
+    #window_width: int = 1024
+    #window_height: int = 768
     fullscreen: bool = False
     debug: bool = True
     username: str = "admin"
@@ -22,11 +20,7 @@ class Settings:
 
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}/patient"
-
-    @property
-    def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return f"{self.base_url}/patient"
 
 class Config:
     """Gestionnaire de configuration"""
@@ -35,14 +29,10 @@ class Config:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(Config, cls).__new__(cls)
+            cls._instance.config_file = "settings.json"
             cls._instance.settings = None
             cls._instance.load_settings()
         return cls._instance
-
-    def __init__(self):
-        self.config_file = "settings.json"
-        if not self.settings:
-            self.load_settings()
 
     def load_settings(self):
         """Charge les paramètres depuis le fichier JSON"""

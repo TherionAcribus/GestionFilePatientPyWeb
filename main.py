@@ -3,7 +3,7 @@ from config import Config
 import requests
 from requests.exceptions import RequestException
 import time
-from printer import Printer, PrinterAPI
+from printer import Printer, PrinterAPI, MinimalAPI
 
 class WebViewClient:
     def __init__(self):
@@ -14,7 +14,9 @@ class WebViewClient:
         self.username = Config().settings.username
         self.password = Config().settings.password
         self.base_url = Config().settings.base_url
-        self.printer_api = PrinterAPI()
+
+        # Création de l'API minimale
+        self.js_api = MinimalAPI()
 
         # Tentative d'obtention du token au démarrage
         try:
@@ -33,7 +35,7 @@ class WebViewClient:
             title="PharmaFile",
             url=f"{self.base_url}/patient",
             fullscreen=False,
-            js_api=self.printer_api  # Exposer l'API à JavaScript
+            js_api=self.js_api  # Exposer l'API à JavaScript
         )
         
         # Ajout des gestionnaires d'événements
@@ -72,7 +74,7 @@ class WebViewClient:
                 self.app_token
             )
             # Une fois l'imprimante initialisée, on la passe à l'API
-            self.printer_api.set_printer(self.printer)
+            self.js_api.set_print_callback(self.printer.print)
         else:
             raise Exception("Tentative d'initialisation de l'imprimante sans token")
 

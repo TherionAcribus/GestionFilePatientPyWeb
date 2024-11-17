@@ -7,6 +7,31 @@ from requests.exceptions import RequestException
 import queue
 import time
 
+class MinimalAPI:
+    """API minimaliste pour PyWebView"""
+    def __init__(self):
+        self._print_callback = None
+
+    def set_print_callback(self, callback):
+        """Définit la fonction de callback pour l'impression"""
+        self._print_callback = callback
+
+    def print_ticket(self, print_data):
+        """Méthode exposée à JavaScript pour l'impression"""
+        if self._print_callback:
+            try:
+                return self._print_callback(print_data)
+            except Exception as e:
+                return {
+                    'success': False,
+                    'message': f'Erreur d\'impression : {str(e)}'
+                }
+        return {
+            'success': False,
+            'message': 'Système d\'impression non initialisé'
+        }
+
+
 
 class PrinterAPI:
     """Version simplifiée de l'API pour éviter les problèmes de sérialisation"""

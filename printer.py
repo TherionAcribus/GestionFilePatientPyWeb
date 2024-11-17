@@ -14,20 +14,37 @@ class PrinterAPI:
 
     def print_ticket(self, print_data):
         """Méthode exposée à JavaScript pour l'impression"""
-        print("Données reçues pour impression:", print_data)
         try:
-            print("Données reçues pour impression:", print_data)
+            if self.printer is None:
+                return {
+                    'success': False,
+                    'message': 'Imprimante non initialisée'
+                }
             success = self.printer.print(print_data)
             return {
                 'success': success,
                 'message': 'Impression réussie' if success else 'Échec de l\'impression'
             }
-        except Exception as e:
-            print(f"Erreur lors de l'impression: {e}")
+        except ValueError as e:
+            if "langid" in str(e):
+                error_msg = ('Erreur de permissions USB. Vérifiez les droits d\'accès ou exécutez:\n'
+                           'sudo usermod -a -G dialout $USER\n'
+                           'puis déconnectez-vous et reconnectez-vous')
+                print(error_msg)
+                return {
+                    'success': False,
+                    'message': error_msg
+                }
             return {
                 'success': False,
-                'message': f'Erreur: {str(e)}'
+                'message': f'Erreur de valeur : {str(e)}'
             }
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Erreur : {str(e)}'
+            }
+        
 
 class PrinterStatusThread(threading.Thread):
     def __init__(self, url, headers, status_queue):
@@ -55,6 +72,7 @@ class PrinterStatusThread(threading.Thread):
                 print(f"Error sending printer status: {e}")
             time.sleep(0.1)  # Petit délai pour éviter de surcharger le CPU
 
+
 class Printer:
     def __init__(self, idVendor, idProduct, printer_model, web_url, app_token):
         self.idVendor = int(idVendor, 16)
@@ -79,7 +97,24 @@ class Printer:
         self.status_thread.start()
         
         # Initialisation de l'imprimante
-        self.initialize_printer()
+        try:
+            self.initialize_printer()
+        except ValueError as e:
+            if "langid" in str(e):
+                error_msg = ('Erreur de permissions USB. Pour résoudre :\n'
+                           '1. Ajoutez une règle udev :\n'
+                           f'echo \'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{idVendor}", '
+                           f'ATTRS{{idProduct}}=="{idProduct}", MODE="0666", GROUP="dialout"\' '
+                           '| sudo tee /etc/udev/rules.d/99-printer.rules\n'
+                           '2. Rechargez les règles :\n'
+                           'sudo udevadm control --reload-rules && sudo udevadm trigger\n'
+                           '3. Ajoutez votre utilisateur au groupe dialout :\n'
+                           'sudo usermod -a -G dialout $USER\n'
+                           '4. Déconnectez-vous et reconnectez-vous')
+                print(error_msg)
+                self.send_printer_status(True, error_msg)
+            else:
+                self.send_printer_status(True, f"Erreur d'initialisation : {str(e)}")
 
     def initialize_printer(self):
         try:
@@ -93,6 +128,13 @@ class Printer:
             self.p = None
             self.error = True
             self.send_printer_status(True, "Imprimante USB non trouvée.")
+        except ValueError as e:
+            if "langid" in str(e):
+                raise  # Remonter l'erreur pour une gestion spéciale
+            print(f"Erreur lors de l'initialisation : {e}")
+            self.p = None
+            self.error = True
+            self.send_printer_status(True, f"Erreur lors de l'initialisation : {e}")
         except Exception as e:
             print(f"Erreur lors de l'initialisation : {e}")
             self.p = None
@@ -115,6 +157,12 @@ class Printer:
                 self.error = False
                 self.send_printer_status(False, "Impression réussie.")
             return True
+        except ValueError as e:
+            if "langid" in str(e):
+                self.send_printer_status(True, "Erreur de permissions USB. Vérifiez les droits d'accès.")
+            else:
+                self.send_printer_status(True, f"Erreur lors de l'impression : {e}")
+            return False
         except Exception as e:
             print(f"Erreur lors de l'impression : {e}")
             self.send_printer_status(True, f"Erreur lors de l'impression : {e}")

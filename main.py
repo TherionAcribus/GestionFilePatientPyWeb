@@ -47,7 +47,8 @@ class WebViewClient:
         # Ajout des configurations d'optimisation
         self.webview_settings = {
             'text_select': False,
-            'localization': False
+            'localization': False,
+            'gui': 'cef'
         }
 
 

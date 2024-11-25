@@ -148,6 +148,7 @@ class Printer:
                 self.error = False
                 self.send_printer_status('print_ok', "Impression réussie.")
             # on vérifie l'état du papier après chaque impression.
+            print("Avant check_paper_status") 
             self.check_paper_status()
             return True
         except ValueError as e:
@@ -179,6 +180,7 @@ class Printer:
         """
         Vérifie l'état du papier en utilisant les méthodes python-escpos
         """
+        print("verification du papier")
         if self.p is None:
             self.send_printer_status("error_init", "Imprimante non initialisée")
             return

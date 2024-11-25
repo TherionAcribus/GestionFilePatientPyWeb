@@ -7,6 +7,7 @@ from requests.exceptions import RequestException
 import queue
 import time
 
+
 class PrinterAPI:
     """API minimaliste pour PyWebView"""
     def __init__(self):
@@ -102,6 +103,9 @@ class Printer:
             else:
                 self.send_printer_status(True, f"Erreur d'initialisation : {str(e)}")
 
+        print("Etat du papier0:")
+        print(self.check_paper_status())
+
     def initialize_printer(self):
         try:
             self.p = Usb(self.idVendor, self.idProduct, profile=self.printer_model)
@@ -165,3 +169,22 @@ class Printer:
         if self.status_thread:
             self.status_thread.stop()
             self.status_thread.join()
+
+    def check_paper_status(self):
+        """
+        Vérifie l'état du papier en utilisant les méthodes python-escpos
+        """
+        if self.p is None:
+            return False, "Imprimante non initialisée"
+
+        try:
+            paper_status = self.p.paper_status()
+            
+            if paper_status == 0:
+                return False, "Plus de papier"
+            elif paper_status == 1:
+                return False, "Niveau de papier bas"
+            return True, "Niveau de papier OK"
+                
+        except Exception as e:
+            return False, f"Erreur lors de la vérification papier: {str(e)}"

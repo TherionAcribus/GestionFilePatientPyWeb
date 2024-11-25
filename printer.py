@@ -71,6 +71,7 @@ class Printer:
         self.error = None
         self.encoding = 'utf-8'
         self.status_queue = queue.Queue()
+        self.is_paper_ok = True
         
         # Démarrage du thread de status
         self.status_thread = PrinterStatusThread(
@@ -99,43 +100,44 @@ class Printer:
                            'sudo usermod -a -G dialout $USER\n'
                            '4. Déconnectez-vous et reconnectez-vous')
                 print(error_msg)
-                self.send_printer_status(True, error_msg)
+                self.send_printer_status('error_grant', error_msg)
             else:
-                self.send_printer_status(True, f"Erreur d'initialisation : {str(e)}")
+                self.send_printer_status('error_init', f"Erreur d'initialisation : {str(e)}")
 
-        print("Etat du papier0:")
         print(self.check_paper_status())
 
     def initialize_printer(self):
         try:
             self.p = Usb(self.idVendor, self.idProduct, profile=self.printer_model)
             print("printer", self.p)
-            self.send_printer_status(False, "Imprimante USB initialisée avec succès.")
+            self.send_printer_status('init_ok', "Imprimante USB initialisée avec succès.")
             self.error = False
             print("Imprimante initialisée avec succès.")
         except USBNotFoundError:
             print("Avertissement : Imprimante USB non trouvée.")
             self.p = None
             self.error = True
-            self.send_printer_status(True, "Imprimante USB non trouvée.")
+            self.send_printer_status('error_not_found', "Imprimante USB non trouvée.")
         except ValueError as e:
             if "langid" in str(e):
                 raise  # Remonter l'erreur pour une gestion spéciale
             print(f"Erreur lors de l'initialisation : {e}")
             self.p = None
             self.error = True
-            self.send_printer_status(True, f"Erreur lors de l'initialisation : {e}")
+            self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
         except Exception as e:
             print(f"Erreur lors de l'initialisation : {e}")
             self.p = None
             self.error = True
-            self.send_printer_status(True, f"Erreur lors de l'initialisation : {e}")
+            self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
+        # vérification du papier
+        self.check_paper_status()
 
     def print(self, data):
         if self.p is None:
             print("Erreur : L'imprimante n'est pas initialisée correctement.")
             self.error = True
-            self.send_printer_status(True, "Imprimante non initialisée correctement.")
+            self.send_printer_status('error_init', "Imprimante non initialisée correctement.")
             return False
 
         try:
@@ -143,19 +145,22 @@ class Printer:
             print("Impression du message :", data)
             self.p.text(data)
             self.p.cut()
+            # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
             if self.error:
                 self.error = False
-                self.send_printer_status(False, "Impression réussie.")
+                self.send_printer_status('print_ok', "Impression réussie.")
+            # on vérifie l'état du papier après chaque impression.
+            self.indicate_paper_status()
             return True
         except ValueError as e:
             if "langid" in str(e):
-                self.send_printer_status(True, "Erreur de permissions USB. Vérifiez les droits d'accès.")
+                self.send_printer_status('error_grant', "Erreur de permissions USB. Vérifiez les droits d'accès.")
             else:
-                self.send_printer_status(True, f"Erreur lors de l'impression : {e}")
+                self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
             return False
         except Exception as e:
             print(f"Erreur lors de l'impression : {e}")
-            self.send_printer_status(True, f"Erreur lors de l'impression : {e}")
+            self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
             return False
 
     def send_printer_status(self, error, error_message):
@@ -170,21 +175,32 @@ class Printer:
             self.status_thread.stop()
             self.status_thread.join()
 
+
     def check_paper_status(self):
         """
         Vérifie l'état du papier en utilisant les méthodes python-escpos
         """
         if self.p is None:
-            return False, "Imprimante non initialisée"
+            self.send_printer_status("error_init", "Imprimante non initialisée")
+            return
 
         try:
             paper_status = self.p.paper_status()
             
             if paper_status == 0:
-                return False, "Plus de papier"
+                self.send_printer_status("no_paper", "Plus de papier dans l'imprimante")
+                self.is_paper_ok = False
+                return
             elif paper_status == 1:
-                return False, "Niveau de papier bas"
-            return True, "Niveau de papier OK"
+                self.send_printer_status("low_paper", "Il ne reste pas beaucoup de papier dans l'imprimante")
+                self.is_paper_ok = False
+                return
+            # on envoie un message si le papier est ok uniquement si ce n'était pas le cas avant
+            else:
+                if not self.is_paper_ok:
+                    self.send_printer_status("paper_ok", "Papier dans l'imprimante")
+                    self.is_paper_ok = True
+                return
                 
         except Exception as e:
             return False, f"Erreur lors de la vérification papier: {str(e)}"

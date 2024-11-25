@@ -104,8 +104,6 @@ class Printer:
             else:
                 self.send_printer_status('error_init', f"Erreur d'initialisation : {str(e)}")
 
-        print(self.check_paper_status())
-
     def initialize_printer(self):
         try:
             self.p = Usb(self.idVendor, self.idProduct, profile=self.printer_model)
@@ -150,7 +148,7 @@ class Printer:
                 self.error = False
                 self.send_printer_status('print_ok', "Impression réussie.")
             # on vérifie l'état du papier après chaque impression.
-            self.indicate_paper_status()
+            self.check_paper_status()
             return True
         except ValueError as e:
             if "langid" in str(e):
@@ -162,6 +160,7 @@ class Printer:
             print(f"Erreur lors de l'impression : {e}")
             self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
             return False
+        
 
     def send_printer_status(self, error, error_message):
         self.status_queue.put({

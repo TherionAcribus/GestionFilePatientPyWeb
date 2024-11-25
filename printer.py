@@ -139,24 +139,27 @@ class Printer:
             return False
 
         try:
-            data = base64.b64decode(data).decode(self.encoding)
-            print("Impression du message :", data)
-            self.p.text(data)
-            self.p.cut()
-            # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
-            if self.error:
-                self.error = False
-                self.send_printer_status('print_ok', "Impression réussie.")
-            # on vérifie l'état du papier après chaque impression.
-            print("Avant check_paper_status") 
-            self.check_paper_status()
-            return True
+            paper_code = self.check_paper_status()
+            if paper_code != 'no_paper':
+                data = base64.b64decode(data).decode(self.encoding)
+                print("Impression du message :", data)
+                self.p.text(data)
+                self.p.cut()
+                # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
+                if self.error:
+                    self.error = False
+                    self.send_printer_status('print_ok', "Impression réussie.")
+                # on vérifie l'état du papier après chaque impression.            
+                return True
+            return False
+        
         except ValueError as e:
             if "langid" in str(e):
                 self.send_printer_status('error_grant', "Erreur de permissions USB. Vérifiez les droits d'accès.")
             else:
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
             return False
+        
         except Exception as e:
             print(f"Erreur lors de l'impression : {e}")
             self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
@@ -191,17 +194,17 @@ class Printer:
             if paper_status == 0:
                 self.send_printer_status("no_paper", "Plus de papier dans l'imprimante")
                 self.is_paper_ok = False
-                return
+                return 'no_paper'
             elif paper_status == 1:
                 self.send_printer_status("low_paper", "Il ne reste pas beaucoup de papier dans l'imprimante")
                 self.is_paper_ok = False
-                return
+                return 'low_paper'
             # on envoie un message si le papier est ok uniquement si ce n'était pas le cas avant
             else:
                 if not self.is_paper_ok:
                     self.send_printer_status("paper_ok", "Papier dans l'imprimante")
                     self.is_paper_ok = True
-                return
+                return 'paper_ok'
                 
         except Exception as e:
             return False, f"Erreur lors de la vérification papier: {str(e)}"

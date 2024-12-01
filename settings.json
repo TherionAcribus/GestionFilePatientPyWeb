@@ -9,5 +9,6 @@
     "printer_model": "TM-T88II",
     "app_secret": "votre_secret_app",
     "websocket_enabled": false,
-    "websocket_debug": false
+    "websocket_debug": false,
+    "check_paper": true
 }

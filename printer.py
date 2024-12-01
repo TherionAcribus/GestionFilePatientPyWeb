@@ -1,11 +1,32 @@
 from escpos.printer import Usb
 from escpos.exceptions import USBNotFoundError
+from escpos.constants import RT_STATUS_PAPER
 import base64
 import threading
 import requests
-from requests.exceptions import RequestException
 import queue
 import time
+from config import Config
+from array import array
+
+
+class CustomUsb(Usb):
+    def query_status(self, mode):
+        """
+        Surcharge de escpos.printer.Usb.query_status
+        Version modifiée de query_status qui considère un tableau vide comme absence de papier
+        Le problème est qu'à l'init de l'imprimante les status sont bien renvoyés, 
+        mais en cours d'utilisation s'il n'y a plus de papier, le status renvoyé est vide. Or la lib escpos considère que cela correspond à la présence de papier
+        """
+        self._raw(mode)
+        time.sleep(0.1)  # Petit délai pour éviter laisser le temps à l'imprimante de répondre (mais bloque le process). Modif si besoin
+        status = self._read()
+        
+        # Si le tableau est vide et qu'on vérifie le status papier
+        if len(status) == 0 and mode == RT_STATUS_PAPER:
+            # On retourne [126] qui correspond à l'absence de papier
+            return array('B', [126])
+        return status
 
 
 class PrinterAPI:
@@ -129,9 +150,17 @@ class Printer:
             self.error = True
             self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
         # vérification du papier
-        self.check_paper_status()
+        if Config().settings.check_paper:
+            self.check_paper_status()
 
     def print(self, data):
+        # si on voulait verifier le papier avant chaque impression
+        if Config().settings.check_paper:
+            paper_code = self.check_paper_status()
+        # sinon c'est toujours bon
+        else: 
+            paper_code = 'paper_ok'
+
         if self.p is None:
             print("Erreur : L'imprimante n'est pas initialisée correctement.")
             self.error = True
@@ -139,7 +168,6 @@ class Printer:
             return False
 
         try:
-            paper_code = self.check_paper_status()
             if paper_code != 'no_paper':
                 data = base64.b64decode(data).decode(self.encoding)
                 print("Impression du message :", data)
@@ -202,7 +230,7 @@ class Printer:
             # on envoie un message si le papier est ok uniquement si ce n'était pas le cas avant
             else:
                 if not self.is_paper_ok:
-                    self.send_printer_status("paper_ok", "Papier dans l'imprimante")
+                    self.send_printer_status("paper_ok", "Papier remis dans l'imprimante")
                     self.is_paper_ok = True
                 return 'paper_ok'
                 

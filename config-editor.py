@@ -59,6 +59,7 @@ class ConfigEditor(tk.Tk):
                 ("printer_id_vendor", "ID Vendeur:", str),
                 ("printer_id_product", "ID Produit:", str),
                 ("printer_model", "Modèle:", str),
+                ("check_paper", "Vérifier le papier avant les impressions:", bool),
             ]),
         ]
 

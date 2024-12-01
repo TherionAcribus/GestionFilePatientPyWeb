@@ -18,7 +18,8 @@ class Settings:
     printer_model: str = "TM-T88II"
     app_secret: str = "votre_secret_app"
     websocket_enabled: bool = False  
-    websocket_debug: bool = False   
+    websocket_debug: bool = False
+    check_paper: bool = True  
 
     @property
     def url(self) -> str:

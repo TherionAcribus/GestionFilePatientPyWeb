@@ -16,7 +16,8 @@ class CustomUsb(Usb):
         Surcharge de escpos.printer.Usb.query_status
         Version modifiée de query_status qui considère un tableau vide comme absence de papier
         Le problème est qu'à l'init de l'imprimante les status sont bien renvoyés, 
-        mais en cours d'utilisation s'il n'y a plus de papier, le status renvoyé est vide. Or la lib escpos considère que cela correspond à la présence de papier
+        mais en cours d'utilisation s'il n'y a plus de papier, le status renvoyé est vide. Or la lib escpos considère que cela correspond à la présence de papier.
+        En fait, si status vide, c'est que impression occupée potentiellement parce qu'elle essaye d'imprimer sans papier.
         """
         self._raw(mode)
         time.sleep(0.1)  # Petit délai pour éviter laisser le temps à l'imprimante de répondre (mais bloque le process). Modif si besoin
@@ -127,7 +128,7 @@ class Printer:
 
     def initialize_printer(self):
         try:
-            self.p = Usb(self.idVendor, self.idProduct, profile=self.printer_model)
+            self.p = CustomUsb(self.idVendor, self.idProduct, profile=self.printer_model)
             print("printer", self.p)
             self.send_printer_status('init_ok', "Imprimante USB initialisée avec succès.")
             self.error = False

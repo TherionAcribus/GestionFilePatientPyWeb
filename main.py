@@ -47,7 +47,8 @@ class WebViewClient:
         # Ajout des configurations d'optimisation
         self.webview_settings = {
             'text_select': False,
-            'localization': False
+            'localization': False,
+            'on_top': True,
         }
 
 
@@ -93,12 +94,14 @@ class WebViewClient:
         
         # Ajout des gestionnaires d'événements
         self.window.events.loaded += self.on_loaded
-        self.window.events.loaded += lambda: disable_context_menu()
+        self.window.events.loaded += lambda: self.disable_context_menu_and_cursor()
 
         # Injection de code JS pour désactiver le menu contextuel
-        def disable_context_menu():
+        def disable_context_menu_and_cursor(self):
+            """Désactive le menu contextuel et masque le curseur"""
             js_code = """
             if (!window._contextMenuDisabled) {
+                // Désactive le menu contextuel
                 window.addEventListener('contextmenu', function(e) {
                     e.preventDefault();
                     return false;
@@ -110,6 +113,15 @@ class WebViewClient:
                         return false;
                     }
                 }, true);
+                
+                // Masque le curseur via CSS
+                const style = document.createElement('style');
+                style.textContent = `
+                    * {
+                        cursor: none !important;
+                    }
+                `;
+                document.head.appendChild(style);
                 
                 window._contextMenuDisabled = true;
             }

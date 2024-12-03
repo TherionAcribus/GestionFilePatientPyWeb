@@ -304,6 +304,7 @@ class WebViewClient:
         try:
             os.environ['WEBKIT_DISABLE_COMPOSITING_MODE'] = '1'
             os.environ['WEBKIT_FORCE_ACCELERATED_COMPOSITING'] = '1'
+            os.environ["PYWEBVIEW_GUI"] = "qt"
             self.create_window()
             webview.start(debug=Config().settings.debug)
         finally:

@@ -42,6 +42,9 @@ class WebViewClient:
         self.username = Config().settings.username
         self.password = Config().settings.password
         self.base_url = Config().settings.base_url
+        # Forcer l'utilisation de HTTPS si nécessaire pour éviter la perte du paramètre 'next' lors de la redirection
+        if self.base_url.startswith("http://"):
+            self.base_url = "https://" + self.base_url[len("http://"):]
         self.is_fullscreen = Config().settings.fullscreen
 
         # Ajout des configurations d'optimisation
@@ -96,37 +99,37 @@ class WebViewClient:
         self.window.events.loaded += self.on_loaded
         self.window.events.loaded += lambda: self.disable_context_menu_and_cursor()
 
-        # Injection de code JS pour désactiver le menu contextuel
-        def disable_context_menu_and_cursor(self):
-            """Désactive le menu contextuel et masque le curseur"""
-            js_code = """
-            if (!window._contextMenuDisabled) {
-                // Désactive le menu contextuel
-                window.addEventListener('contextmenu', function(e) {
+    # Injection de code JS pour désactiver le menu contextuel
+    def disable_context_menu_and_cursor(self):
+        """Désactive le menu contextuel et masque le curseur"""
+        js_code = """
+        if (!window._contextMenuDisabled) {
+            // Désactive le menu contextuel
+            window.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+                return false;
+            }, true);
+            
+            window.addEventListener('touchstart', function(e) {
+                if (e.touches.length > 1) {
                     e.preventDefault();
                     return false;
-                }, true);
-                
-                window.addEventListener('touchstart', function(e) {
-                    if (e.touches.length > 1) {
-                        e.preventDefault();
-                        return false;
-                    }
-                }, true);
-                
-                // Masque le curseur via CSS
-                const style = document.createElement('style');
-                style.textContent = `
-                    * {
-                        cursor: none !important;
-                    }
-                `;
-                document.head.appendChild(style);
-                
-                window._contextMenuDisabled = true;
-            }
-            """
-            self.window.evaluate_js(js_code)
+                }
+            }, true);
+            
+            // Masque le curseur via CSS
+            const style = document.createElement('style');
+            style.textContent = `
+                * {
+                    cursor: none !important;
+                }
+            `;
+            document.head.appendChild(style);
+            
+            window._contextMenuDisabled = true;
+        }
+        """
+        self.window.evaluate_js(js_code)
 
     def get_app_token(self, max_retries=3, retry_delay=2):
         """Obtient le token d'application avec système de retry"""
@@ -179,6 +182,12 @@ class WebViewClient:
 
         if "login" in current_url:
             self.inject_login_script()
+
+        # Si l'utilisateur est redirigé vers la racine après authentification,
+        # on recharge explicitement la page /patient
+        if current_url.rstrip('/') == self.base_url.rstrip('/'):
+            print("Redirection inattendue vers la racine détectée, chargement de /patient")
+            self.window.load_url(f"{self.base_url}/patient")
 
     def toggle_fullscreen(self):
         """Gère le basculement du mode plein écran"""

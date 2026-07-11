@@ -1,0 +1,9 @@
+# Empreintes de secrets HISTORIQUES déjà traités (rotés/invalidés).
+# Comme l'historique public n'est pas réécrit, gitleaks peut re-signaler
+# d'anciennes valeurs. Après rotation, colle ici les empreintes affichées
+# par le premier run CI pour acquitter ces findings (format ci-dessous) :
+#
+#   <commit-sha>:<chemin>:<regle>:<ligne>
+#
+# Exemple :
+#   a1b2c3d:instance/queuedatabase.db:generic-api-key:1

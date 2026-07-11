@@ -1,8 +1,17 @@
 import socketio
 import threading
 import time
+import random
 import json
 from typing import Callable
+
+# Backoff (secondes) entre deux tentatives de reconnexion, plafonné, avec un
+# peu de hasard (jitter) pour éviter que toutes les bornes d'un même serveur
+# partagé entre plusieurs pharmacies ne retentent exactement au même instant
+# après un redémarrage serveur ("thundering herd").
+RECONNECT_INITIAL_DELAY = 5
+RECONNECT_MAX_DELAY = 30
+RECONNECT_JITTER_RATIO = 0.5
 
 class WebSocketClient(threading.Thread):
     def __init__(self, web_url: str, print_callback: Callable[[str], None], debug: bool = False):
@@ -15,8 +24,9 @@ class WebSocketClient(threading.Thread):
 
         self._should_run = True
         self._is_connected = False
+        self._reconnection_attempts = 0
         self._print_callback = print_callback
-        
+
         # Configuration du client Socket.IO
         self.sio = socketio.Client(
             logger=debug,
@@ -34,6 +44,18 @@ class WebSocketClient(threading.Thread):
         while self._should_run:
             try:
                 if not self._is_connected:
+                    if self._reconnection_attempts > 0:
+                        base_delay = min(
+                            RECONNECT_INITIAL_DELAY * self._reconnection_attempts,
+                            RECONNECT_MAX_DELAY
+                        )
+                        delay = base_delay + random.uniform(0, base_delay * RECONNECT_JITTER_RATIO)
+                        print(f"Attente de {delay:.1f}s avant la tentative de reconnexion "
+                              f"{self._reconnection_attempts}")
+                        time.sleep(delay)
+                        if not self._should_run:
+                            break
+
                     self.sio.connect(
                         self.web_url,
                         namespaces=['/socket_app_patient'],
@@ -41,19 +63,20 @@ class WebSocketClient(threading.Thread):
                         transports=['websocket']
                     )
                     self._is_connected = True
-                
+                    self._reconnection_attempts = 0
+
                 while self._is_connected and self._should_run:
                     time.sleep(1)
-                
+
                 if not self._should_run:
                     break
 
             except socketio.exceptions.ConnectionError as e:
-                print(f"Erreur de connexion WebSocket: {e}")
+                self._reconnection_attempts += 1
+                print(f"Erreur de connexion WebSocket (tentative {self._reconnection_attempts}): {e}")
                 if not self._should_run:
                     break
-                time.sleep(5)
-        
+
         self._cleanup()
 
     def stop(self):

@@ -40,17 +40,25 @@ class PrinterAPI:
         self._print_callback = callback
 
     def print_ticket(self, print_data):
-        """Méthode exposée à JavaScript pour l'impression"""
+        """Méthode exposée à JavaScript pour l'impression.
+
+        Retourne toujours un dictionnaire au format unique
+        ``{'success': bool, 'code': str, 'message': str}``. Le callback
+        (Printer.print) respecte déjà ce contrat ; on ne fait que
+        garantir le même format pour les erreurs propres à l'API.
+        """
         if self._print_callback:
             try:
                 return self._print_callback(print_data)
             except Exception as e:
                 return {
                     'success': False,
+                    'code': 'error_exception',
                     'message': f'Erreur d\'impression : {str(e)}'
                 }
         return {
             'success': False,
+            'code': 'error_not_initialized',
             'message': 'Système d\'impression non initialisé'
         }
 
@@ -189,33 +197,69 @@ class Printer:
             print("Erreur : L'imprimante n'est pas initialisée correctement.")
             self.error = True
             self.send_printer_status('error_init', "Imprimante non initialisée correctement.")
-            return False
+            return {
+                'success': False,
+                'code': 'error_init',
+                'message': "Imprimante non initialisée correctement."
+            }
+
+        if paper_code == 'no_paper':
+            return {
+                'success': False,
+                'code': 'no_paper',
+                'message': "Plus de papier dans l'imprimante."
+            }
+
+        # Décodage des données à imprimer (base64 -> texte). Isolé du reste pour
+        # distinguer une charge utile invalide d'une véritable erreur matérielle.
+        try:
+            decoded = base64.b64decode(data).decode(self.encoding)
+        except Exception as e:
+            print(f"Données d'impression invalides : {e}")
+            self.send_printer_status('invalid_data', f"Données d'impression invalides : {e}")
+            return {
+                'success': False,
+                'code': 'invalid_data',
+                'message': "Données d'impression invalides."
+            }
 
         try:
-            if paper_code != 'no_paper':
-                data = base64.b64decode(data).decode(self.encoding)
-                print("Impression du message :", data)
-                self.p.text(data)
-                self.p.cut()
-                # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
-                if self.error:
-                    self.error = False
-                    self.send_printer_status('print_ok', "Impression réussie.")
-                # on vérifie l'état du papier après chaque impression.            
-                return True
-            return False
-        
+            print("Impression du message :", decoded)
+            self.p.text(decoded)
+            self.p.cut()
+            # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
+            if self.error:
+                self.error = False
+                self.send_printer_status('print_ok', "Impression réussie.")
+            return {
+                'success': True,
+                'code': 'print_ok',
+                'message': "Ticket imprimé."
+            }
+
         except ValueError as e:
             if "langid" in str(e):
                 self.send_printer_status('error_grant', "Erreur de permissions USB. Vérifiez les droits d'accès.")
-            else:
-                self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
-            return False
-        
+                return {
+                    'success': False,
+                    'code': 'error_grant',
+                    'message': "Erreur de permissions USB. Vérifiez les droits d'accès."
+                }
+            self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
+            return {
+                'success': False,
+                'code': 'error_print',
+                'message': f"Erreur lors de l'impression : {e}"
+            }
+
         except Exception as e:
             print(f"Erreur lors de l'impression : {e}")
             self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
-            return False
+            return {
+                'success': False,
+                'code': 'error_print',
+                'message': f"Erreur lors de l'impression : {e}"
+            }
         
 
     def send_printer_status(self, error, error_message):
@@ -276,4 +320,6 @@ class Printer:
                 return 'paper_ok'
                 
         except Exception as e:
-            return False, f"Erreur lors de la vérification papier: {str(e)}"
+            print(f"Erreur lors de la vérification papier: {str(e)}")
+            self.send_printer_status("error_paper_check", f"Erreur lors de la vérification papier: {str(e)}")
+            return 'paper_check_error'

@@ -55,13 +55,28 @@ class PrinterAPI:
         }
 
 
+# Timeouts (connexion, lecture) en secondes pour les appels réseau de la borne.
+# Sans timeout, un serveur injoignable ou lent bloque le thread appelant
+# indéfiniment.
+NETWORK_TIMEOUT = (5, 10)
+
+
 class PrinterStatusThread(threading.Thread):
-    def __init__(self, url, headers, status_queue):
+    def __init__(self, url, headers, status_queue, session=None):
         super().__init__(daemon=True)
         self.url = url
-        self.headers = headers
+        self._headers = dict(headers)
+        self._headers_lock = threading.Lock()
         self.status_queue = status_queue
         self._stop_event = threading.Event()
+        # Session persistante : réutilise la connexion TCP/TLS (keep-alive)
+        # au lieu d'en rouvrir une à chaque envoi de statut.
+        self.session = session or requests.Session()
+
+    def update_headers(self, headers):
+        """Met à jour les en-têtes (ex: nouveau token) de façon thread-safe."""
+        with self._headers_lock:
+            self._headers = dict(headers)
 
     def stop(self):
         self._stop_event.set()
@@ -69,17 +84,23 @@ class PrinterStatusThread(threading.Thread):
     def run(self):
         while not self._stop_event.is_set():
             try:
-                if not self.status_queue.empty():
-                    status_data = self.status_queue.get()
-                    response = requests.post(
-                        self.url,
-                        json=status_data,
-                        headers=self.headers
-                    )
-                    print(f"Status sent: {status_data}, Response: {response.status_code}")
+                # Attente bornée : le thread se réveille régulièrement pour
+                # vérifier _stop_event, sans boucle d'attente active sur le CPU.
+                status_data = self.status_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                with self._headers_lock:
+                    headers = dict(self._headers)
+                response = self.session.post(
+                    self.url,
+                    json=status_data,
+                    headers=headers,
+                    timeout=NETWORK_TIMEOUT
+                )
+                print(f"Status sent: {status_data}, Response: {response.status_code}")
             except Exception as e:
                 print(f"Error sending printer status: {e}")
-            time.sleep(0.1)  # Petit délai pour éviter de surcharger le CPU
 
 
 class Printer:
@@ -92,7 +113,9 @@ class Printer:
         self.p = None
         self.error = None
         self.encoding = 'utf-8'
+        # File bornée : ne conserve que le dernier état (voir send_printer_status).
         self.status_queue = queue.Queue()
+        self._status_lock = threading.Lock()
         self.is_paper_ok = True
         
         # Démarrage du thread de status
@@ -196,9 +219,26 @@ class Printer:
         
 
     def send_printer_status(self, error, error_message):
-        self.status_queue.put({
-            'error': error,
-            'message': error_message
+        item = {'error': error, 'message': error_message}
+        # File bornée qui ne conserve que le DERNIER état : si un statut est
+        # encore en attente (réseau lent/bloqué), on le remplace au lieu
+        # d'empiler un backlog de statuts périmés. Le serveur n'a besoin que de
+        # l'état courant de l'imprimante.
+        with self._status_lock:
+            try:
+                while True:
+                    self.status_queue.get_nowait()
+            except queue.Empty:
+                pass
+            self.status_queue.put(item)
+
+    def update_token(self, new_token):
+        """Met à jour le token utilisé pour l'envoi des statuts (renouvellement
+        avant l'expiration des 24 h côté serveur)."""
+        self.app_token = new_token
+        self.status_thread.update_headers({
+            'X-App-Token': new_token,
+            'Content-Type': 'application/json'
         })
 
     def cleanup(self):

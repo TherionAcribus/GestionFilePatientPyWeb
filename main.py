@@ -3,9 +3,14 @@ from config import Config
 import requests
 from requests.exceptions import RequestException
 import time
-from printer import Printer, PrinterAPI
+import threading
+from printer import Printer, PrinterAPI, NETWORK_TIMEOUT
 from websocket_client import WebSocketClient
 import os
+
+# Renouvellement du token avant son expiration (24 h côté serveur). Marge d'1 h
+# pour absorber d'éventuels échecs/réessais réseau.
+TOKEN_REFRESH_INTERVAL = 23 * 3600
 
 
 class WindowControlAPI:
@@ -57,6 +62,13 @@ class WebViewClient:
 
         self._protection_injected = False
 
+        # Session HTTP persistante (keep-alive) pour les appels de la borne :
+        # évite de rouvrir une connexion TCP/TLS à chaque requête.
+        self.session = requests.Session()
+        self._next_refresh_delay = TOKEN_REFRESH_INTERVAL
+        self._token_refresh_stop = threading.Event()
+        self._token_refresh_thread = None
+
         self.socket_client = None
         if Config().settings.websocket_enabled:
             self.start_websocket_client()
@@ -71,6 +83,8 @@ class WebViewClient:
             self.connected = True
             print("Connexion établie avec succès")
             self.initialize_printer()
+            # Renouvellement périodique du token (borne en fonctionnement continu)
+            self.start_token_refresh()
         except Exception as e:
             print("Erreur lors de l'initialisation :", e)
             self.connected = False
@@ -138,7 +152,9 @@ class WebViewClient:
         
         for attempt in range(max_retries):
             try:
-                response = requests.post(url, data=data)
+                # timeout : sans lui, une borne face à un serveur injoignable
+                # resterait bloquée indéfiniment sur cet appel.
+                response = self.session.post(url, data=data, timeout=NETWORK_TIMEOUT)
                 if response.status_code == 200:
                     self.app_token = response.json()['token']
                     print("Token obtenu avec succès")
@@ -152,7 +168,31 @@ class WebViewClient:
                 time.sleep(retry_delay)
         
         raise Exception("Impossible d'obtenir le token après plusieurs tentatives")
-    
+
+    def start_token_refresh(self):
+        """Renouvelle le token avant son expiration (24 h côté serveur).
+
+        Sur une borne qui tourne en continu, un token expiré ferait échouer en
+        401 toutes les requêtes authentifiées (notamment l'envoi du statut
+        imprimante). On le renouvelle donc de façon proactive et, en cas
+        d'échec réseau, on réessaie rapidement au lieu d'attendre l'intervalle
+        complet.
+        """
+        def _loop():
+            while not self._token_refresh_stop.wait(self._next_refresh_delay):
+                try:
+                    self.get_app_token()
+                    if self.printer:
+                        self.printer.update_token(self.app_token)
+                    self._next_refresh_delay = TOKEN_REFRESH_INTERVAL
+                    print("Token renouvelé avec succès")
+                except Exception as e:
+                    self._next_refresh_delay = 300  # réessai dans 5 min
+                    print(f"Échec du renouvellement du token, réessai bientôt : {e}")
+
+        self._token_refresh_thread = threading.Thread(target=_loop, daemon=True)
+        self._token_refresh_thread.start()
+
     def initialize_printer(self):
         """Initialise l'imprimante une fois le token obtenu"""
         if self.app_token:
@@ -317,6 +357,9 @@ class WebViewClient:
             self.create_window()
             webview.start(debug=Config().settings.debug)
         finally:
+            self._token_refresh_stop.set()
+            if self.printer:
+                self.printer.cleanup()
             if self.socket_client:
                 self.socket_client.stop()
 

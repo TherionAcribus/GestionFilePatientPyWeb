@@ -11,6 +11,10 @@ class Settings:
     base_url: str = "http://localhost:5000"
     fullscreen: bool = False
     debug: bool = True
+    # Masquer le curseur (mode kiosque tactile). Mettre à False pour un poste de
+    # maintenance à la souris. Même à True, le curseur réapparaît dès qu'une
+    # souris est utilisée et se remasque au toucher suivant (cf. main.py).
+    hide_cursor: bool = True
     username: str = "admin"
     password: str = "admin"
     printer_id_vendor: str = "0x04b8"

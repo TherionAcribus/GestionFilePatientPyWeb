@@ -233,9 +233,20 @@ class WebViewClient:
         # borne est (ou devient) opérationnelle.
         self.window.events.shown += self._on_window_shown
 
-    # Injection de code JS pour désactiver le menu contextuel
+    # Injection de code JS pour désactiver le menu contextuel et gérer le curseur
     def disable_context_menu_and_cursor(self):
-        """Désactive le menu contextuel et masque le curseur"""
+        """Désactive le menu contextuel, bloque le pinch-zoom (multitouch) et
+        gère le curseur.
+
+        Multitouch : preventDefault UNIQUEMENT si plusieurs points de contact
+        (pinch/zoom). Un tap simple laisse passer le clic synthétique, sinon des
+        boutons deviennent inopérants selon le moteur WebView.
+
+        Curseur : masqué par défaut (borne tactile en libre-service) MAIS
+        réapparaît dès qu'une souris est utilisée (maintenance) puis se remasque
+        au toucher suivant. Le réglage hide_cursor=False force l'affichage
+        permanent. Les faux 'mousemove' générés par le tactile sont ignorés."""
+        hide_cursor = "true" if Config().settings.hide_cursor else "false"
         js_code = """
         if (!window._contextMenuDisabled) {
             // Désactive le menu contextuel
@@ -243,26 +254,38 @@ class WebViewClient:
                 e.preventDefault();
                 return false;
             }, true);
-            
+
+            // Ne bloque QUE le multitouch (pinch/zoom) : les taps simples
+            // passent normalement (clic synthétique préservé).
             window.addEventListener('touchstart', function(e) {
                 if (e.touches.length > 1) {
                     e.preventDefault();
-                    return false;
                 }
-            }, true);
-            
-            // Masque le curseur via CSS
-            const style = document.createElement('style');
-            style.textContent = `
-                * {
-                    cursor: none !important;
-                }
-            `;
-            document.head.appendChild(style);
-            
+            }, {passive: false, capture: true});
+
+            var hideCursor = %s;
+            if (hideCursor) {
+                // Curseur masqué tant que la classe 'using-mouse' est absente ;
+                // une souris qui bouge la pose, un toucher la retire.
+                var style = document.createElement('style');
+                style.textContent = "html:not(.using-mouse) * { cursor: none !important; }";
+                document.head.appendChild(style);
+
+                var lastTouch = 0;
+                window.addEventListener('touchstart', function() {
+                    lastTouch = Date.now();
+                    document.documentElement.classList.remove('using-mouse');
+                }, true);
+                window.addEventListener('mousemove', function() {
+                    // Ignore les 'mousemove' synthétiques émis juste après un toucher.
+                    if (Date.now() - lastTouch < 800) { return; }
+                    document.documentElement.classList.add('using-mouse');
+                }, true);
+            }
+
             window._contextMenuDisabled = true;
         }
-        """
+        """ % hide_cursor
         self.window.evaluate_js(js_code)
 
     def get_app_token(self, max_retries=3, retry_delay=2):
@@ -470,19 +493,39 @@ class WebViewClient:
         self.window.evaluate_js(script)
 
     def inject_kiosk_protection(self):
-        """Injecte les protections basiques pour le mode kiosque (clic droit et appui long)"""
+        """Injecte les protections kiosque sur les pages servies (clic droit,
+        zoom, sélection sur appui long).
+
+        On NE bloque PLUS tous les touchstart : appeler preventDefault() sur
+        chaque touchstart supprime, selon le moteur WebView, le clic synthétique
+        et rend des boutons tactiles inopérants. On privilégie CSS touch-action
+        (supprime le double-tap zoom et le délai de clic tactile SANS empêcher
+        les taps) + user-select (empêche la sélection de texte sur appui long).
+        Le pinch/zoom multitouch est neutralisé par
+        disable_context_menu_and_cursor() (preventDefault UNIQUEMENT si
+        plusieurs points de contact)."""
         protection_script = """
-        // Bloque le menu contextuel (clic droit)
-        document.addEventListener('contextmenu', function(e) {
-            e.preventDefault();
-            return false;
-        }, false);
-        
-        // Bloque l'appui long sur écran tactile
-        document.addEventListener('touchstart', function(e) {
-            e.preventDefault();
-            return false;
-        }, {passive: false});
+        if (!window._kioskProtected) {
+            // Bloque le menu contextuel (clic droit / appui long)
+            document.addEventListener('contextmenu', function(e) {
+                e.preventDefault();
+                return false;
+            }, false);
+
+            // Approche CSS (préférée à un preventDefault global) :
+            // - touch-action: manipulation -> désactive le double-tap zoom et le
+            //   délai de 300 ms, mais laisse passer les taps -> clics OK.
+            // - user-select/touch-callout: none -> pas de sélection ni de
+            //   menu sur appui long. Les champs de saisie restent sélectionnables.
+            var style = document.createElement('style');
+            style.textContent =
+                "html { touch-action: manipulation; } " +
+                "* { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; } " +
+                "input, textarea { -webkit-user-select: text; user-select: text; }";
+            document.head.appendChild(style);
+
+            window._kioskProtected = true;
+        }
         """
         self.window.evaluate_js(protection_script)
         self._protection_injected = True

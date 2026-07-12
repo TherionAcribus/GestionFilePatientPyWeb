@@ -53,6 +53,7 @@ class ConfigEditor(tk.Tk):
             ("Fenêtre", [
                 ("fullscreen", "Plein écran:", bool),
                 ("debug", "Mode debug:", bool),
+                ("hide_cursor", "Masquer le curseur (mode kiosque):", bool),
             ]),
             ("Authentification", [
                 ("username", "Nom d'utilisateur:", str),

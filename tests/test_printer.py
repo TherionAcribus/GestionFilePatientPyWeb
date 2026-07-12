@@ -53,9 +53,17 @@ class FakeDevice:
     def paper_status(self):
         return self.paper_status_value
 
+    def close(self):
+        pass
 
-def make_printer(device=None, error=False, check_paper=False, monkeypatch=None):
-    """Construit un Printer sans passer par __init__ (pas de matériel/thread)."""
+
+def make_printer(device=None, error=False, check_paper=False, monkeypatch=None,
+                 device_factory=None):
+    """Construit un Printer sans passer par __init__ (pas de matériel/thread).
+
+    ``device_factory`` permet d'exercer le découplage matériel : la fabrique
+    (idVendor, idProduct, model) -> périphérique est appelée par
+    ``initialize_printer`` à la place du vrai USB."""
     p = Printer.__new__(Printer)
     p.p = device
     p.error = error
@@ -68,6 +76,11 @@ def make_printer(device=None, error=False, check_paper=False, monkeypatch=None):
     p._usb_lock = threading.RLock()
     # Identifiant de borne joint aux statuts (send_printer_status).
     p.borne_id = 'test-borne'
+    # Métadonnées matériel + fabrique de périphérique injectée (découplage).
+    p.idVendor = 0x04b8
+    p.idProduct = 0x0202
+    p.printer_model = 'TM-T88II'
+    p._device_factory = device_factory
 
     # Neutralise la dépendance à Config().settings.check_paper : on force la
     # valeur au niveau du module pour éviter d'ouvrir le vrai fichier de config.
@@ -315,3 +328,56 @@ def test_print_rejects_dangerous_payload_without_printing(monkeypatch):
     assert result['code'] == 'invalid_data'
     assert device.text_calls == []
     assert device.cut_calls == 0
+
+
+# --- Tests découplage matériel (fabrique de périphérique injectée) ----------
+
+def test_initialize_printer_uses_injected_factory(monkeypatch):
+    """initialize_printer crée le périphérique via la fabrique injectée : on
+    peut donc utiliser une fausse imprimante SANS matériel USB."""
+    fake = FakeDevice()
+    calls = []
+
+    def factory(id_vendor, id_product, model):
+        calls.append((id_vendor, id_product, model))
+        return fake
+
+    p = make_printer(device=None, check_paper=False, monkeypatch=monkeypatch,
+                     device_factory=factory)
+
+    p.initialize_printer()
+
+    assert p.p is fake
+    assert p.error is False
+    # La fabrique a reçu les identifiants/modèle du Printer.
+    assert calls == [(0x04b8, 0x0202, 'TM-T88II')]
+
+
+def test_initialize_printer_factory_failure_sets_error(monkeypatch):
+    """Si la fabrique échoue (matériel absent), l'imprimante passe en erreur
+    sans lever, et un ticket ne sera pas imprimé."""
+    def factory(id_vendor, id_product, model):
+        raise RuntimeError("USB indisponible")
+
+    p = make_printer(device=None, check_paper=False, monkeypatch=monkeypatch,
+                     device_factory=factory)
+
+    p.initialize_printer()
+
+    assert p.p is None
+    assert p.error is True
+
+
+def test_print_end_to_end_with_fake_printer(monkeypatch):
+    """Impression complète (init via fabrique + print) avec une fausse
+    imprimante : démontre l'exécution des tests sans dépendance matérielle."""
+    fake = FakeDevice()
+    p = make_printer(device=None, check_paper=False, monkeypatch=monkeypatch,
+                     device_factory=lambda v, pr, m: fake)
+
+    p.initialize_printer()
+    result = p.print(_b64("Bonjour"))
+
+    assert result['success'] is True
+    assert fake.text_calls == ["Bonjour"]
+    assert fake.cut_calls == 1

@@ -39,6 +39,14 @@ class CustomUsb(Usb):
         return status
 
 
+def _default_device_factory(id_vendor, id_product, printer_model):
+    """Fabrique par défaut du périphérique d'impression : le VRAI matériel USB
+    (CustomUsb / python-escpos). Point de découplage matériel — les tests
+    injectent une fabrique renvoyant une fausse imprimante (voir
+    Printer(device_factory=...))."""
+    return CustomUsb(id_vendor, id_product, profile=printer_model)
+
+
 class PrinterAPI:
     """API minimaliste pour PyWebView"""
     def __init__(self):
@@ -319,12 +327,18 @@ class PrinterStatusThread(threading.Thread):
 
 class Printer:
     def __init__(self, idVendor, idProduct, printer_model, web_url, app_token,
-                 token_refresh_callback=None):
+                 token_refresh_callback=None, device_factory=None):
         self.idVendor = int(idVendor, 16)
         self.idProduct = int(idProduct, 16)
         self.printer_model = printer_model
         self.web_url = web_url
         self.app_token = app_token
+        # Découplage matériel : la création du périphérique USB passe par une
+        # fabrique injectable. En production c'est CustomUsb (vrai matériel) ;
+        # les tests injectent une fausse imprimante sans dépendance USB.
+        # La fabrique reçoit (idVendor:int, idProduct:int, model:str) et renvoie
+        # un objet exposant text(), cut(), paper_status(), close().
+        self._device_factory = device_factory or _default_device_factory
         # Identifiant de la borne joint à chaque statut (repli sur le hostname si
         # non configuré) pour distinguer les bornes côté serveur.
         self.borne_id = Config().settings.borne_id or socket.gethostname()
@@ -391,7 +405,8 @@ class Printer:
             # on le ferme avant d'en ouvrir un nouveau.
             self._close_printer()
             try:
-                self.p = CustomUsb(self.idVendor, self.idProduct, profile=self.printer_model)
+                self.p = self._device_factory(self.idVendor, self.idProduct,
+                                              self.printer_model)
                 self.send_printer_status('init_ok', "Imprimante USB initialisée avec succès.")
                 self.error = False
                 logger.info("Imprimante USB initialisée avec succès (état USB: connectée).")

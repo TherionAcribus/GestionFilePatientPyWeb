@@ -1,9 +1,12 @@
 """Configuration pytest partagée.
 
-Le module ``printer`` importe ``escpos`` au niveau module. Cette bibliothèque
-dépend du matériel USB et n'est pas installée dans l'environnement de test.
-On enregistre donc des stubs minimalistes dans ``sys.modules`` avant toute
-collecte de tests, afin que ``import printer`` réussisse sans imprimante.
+Le module ``printer`` importe ``escpos`` (python-escpos) et ``usb`` (pyusb) au
+niveau module. Ces bibliothèques dépendent du matériel USB et ne sont pas
+installées dans l'environnement de test/CI. On enregistre donc des stubs
+minimalistes dans ``sys.modules`` avant toute collecte de tests, afin que
+``import printer`` réussisse sans imprimante. Le découplage matériel de
+``Printer`` (fabrique de périphérique injectable) permet ensuite d'utiliser une
+fausse imprimante dans les tests.
 """
 import sys
 import types
@@ -43,4 +46,22 @@ def _install_escpos_stub():
     sys.modules['escpos.constants'] = constants_mod
 
 
+def _install_usb_stub():
+    if 'usb' in sys.modules:
+        return
+
+    usb = types.ModuleType('usb')
+    core_mod = types.ModuleType('usb.core')
+
+    class USBError(Exception):
+        pass
+
+    core_mod.USBError = USBError
+    usb.core = core_mod
+
+    sys.modules['usb'] = usb
+    sys.modules['usb.core'] = core_mod
+
+
 _install_escpos_stub()
+_install_usb_stub()

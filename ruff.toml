@@ -1,0 +1,19 @@
+# Configuration ruff (lint) de la borne.
+#
+# On sélectionne d'abord le socle d'erreurs CRITIQUES (toujours de vrais bugs) :
+#   E9  : erreurs de syntaxe / d'indentation
+#   F63 : tests/comparaisons douteux (ex. `is` sur un littéral)
+#   F7  : constructions invalides (break/continue hors boucle, etc.)
+#   F82 : noms indéfinis (variable/référence non définie)
+# Ce socle passe sur le code existant sans exiger un grand nettoyage de style,
+# tout en bloquant les erreurs réelles. Élargir ensuite progressivement
+# (ex. "F" pour les imports/variables inutilisés, "I" pour le tri des imports).
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[lint.per-file-ignores]
+# Les tests peuvent réimporter/monkeypatcher librement.
+"tests/*" = ["E402", "F811"]

@@ -1,0 +1,17 @@
+# Dépendances d'EXÉCUTION de la borne (GestionFilePatientPyWeb), épinglées.
+#
+# Ces versions sont les dépendances DIRECTES. Pour un verrouillage complet
+# (dépendances transitives incluses), générez un lock depuis une borne
+# validée :   pip freeze > requirements.lock.txt
+# et réconciliez les versions ci-dessous avec celles réellement déployées.
+#
+# Interface graphique kiosque (pywebview + backend Qt).
+pywebview==5.1
+PySide6==6.7.0            # backend Qt de pywebview (PYWEBVIEW_GUI="qt")
+
+# Appels HTTP vers le serveur (token, statuts imprimante).
+requests==2.32.3
+
+# Imprimante ticket ESC/POS via USB.
+python-escpos==3.1
+pyusb==1.2.1

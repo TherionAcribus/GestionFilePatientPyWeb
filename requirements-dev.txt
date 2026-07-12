@@ -1,0 +1,18 @@
+# Dépendances de DÉVELOPPEMENT / CI de la borne, épinglées.
+# Installer par-dessus l'environnement :   pip install -r requirements-dev.txt
+#
+# Les tests s'exécutent SANS matériel : conftest.py stub escpos/pyusb et le
+# découplage matériel de Printer (device_factory) permet une fausse imprimante.
+# Seul `requests` (dépendance d'exécution) est nécessaire pour importer le
+# module `printer` — il est donc inclus ici pour la CI.
+requests==2.32.3
+
+# Tests
+pytest==8.3.2
+
+# Lint
+ruff==0.6.9
+
+# Analyse de sécurité
+bandit==1.7.10           # SAST du code Python
+pip-audit==2.7.3         # vulnérabilités connues des dépendances

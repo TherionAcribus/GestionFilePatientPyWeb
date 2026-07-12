@@ -8,7 +8,5 @@
     "printer_id_product": "0x0202",
     "printer_model": "TM-T88II",
     "app_secret": "CHANGEZ_MOI",
-    "websocket_enabled": false,
-    "websocket_debug": false,
     "check_paper": true
 }

@@ -357,9 +357,10 @@ class Printer:
                 print(f"Réessai imprimante échoué: {e}")
 
     def print(self, data):
-        # Tout le chemin d'impression est sérialisé : deux appels concurrents
-        # (JavaScript via PrinterAPI et WebSocket via handle_websocket_print) ne
-        # peuvent pas écrire en même temps sur le handle USB. Le second attend le
+        # Tout le chemin d'impression est sérialisé : une impression déclenchée
+        # via le pont JavaScript (PrinterAPI) et un accès concurrent du thread de
+        # statut/santé imprimante (vérification papier, reconnexion USB) ne
+        # peuvent pas toucher en même temps le handle USB. Le second attend le
         # premier au lieu d'entrelacer octets et découpes.
         with self._usb_lock:
             # si on voulait verifier le papier avant chaque impression

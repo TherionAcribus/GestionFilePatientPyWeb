@@ -1,7 +1,7 @@
 # config.py
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 import platform
 
@@ -21,8 +21,6 @@ class Settings:
     printer_id_product: str = "0x0202"
     printer_model: str = "TM-T88II"
     app_secret: str = "votre_secret_app"
-    websocket_enabled: bool = False
-    websocket_debug: bool = False
     check_paper: bool = True
     # Identifiant de la borne joint aux statuts imprimante. Vide => le hostname
     # de la machine est utilisé par défaut (voir Printer.__init__).
@@ -91,8 +89,20 @@ class Config:
             if config_file.exists():
                 with open(config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    # Ignore les clés inconnues (ex : options retirées d'une
+                    # version antérieure comme websocket_enabled/websocket_debug).
+                    # Sans ce filtrage, Settings(**data) lèverait une TypeError et
+                    # le repli sur les valeurs par défaut réinitialiserait TOUTE
+                    # la configuration d'une borne déjà déployée (URL, identifiants,
+                    # imprimante...).
+                    known = {f.name for f in fields(Settings)}
+                    ignored = set(data) - known
+                    if ignored:
+                        print(f"Clés de configuration ignorées (inconnues): "
+                              f"{', '.join(sorted(ignored))}")
+                    filtered = {k: v for k, v in data.items() if k in known}
                     # Crée une nouvelle instance de Settings avec les données du fichier
-                    self.settings = Settings(**data)
+                    self.settings = Settings(**filtered)
             else:
                 # Utilise les valeurs par défaut
                 self.settings = Settings()

@@ -28,6 +28,20 @@ class Settings:
     def url(self) -> str:
         return f"{self.base_url}/patient"
 
+    @property
+    def is_production(self) -> bool:
+        """Production = mode debug désactivé."""
+        return not self.debug
+
+    def has_insecure_default_credentials(self) -> bool:
+        """Vrai si des identifiants par défaut (admin/admin) ou le secret
+        d'application par défaut sont encore en place. À refuser en production
+        (cf. main.py) pour ne pas exposer une borne avec des accès triviaux."""
+        return (
+            (self.username == "admin" and self.password == "admin")
+            or self.app_secret in ("", "votre_secret_app")
+        )
+
 class Config:
     """Gestionnaire de configuration"""
     _instance = None
@@ -87,9 +101,16 @@ class Config:
     def save_settings(self):
         """Sauvegarde les paramètres dans le fichier JSON"""
         config_file = self.config_path / "settings.json"
-        
+
         try:
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(asdict(self.settings), f, indent=4)
+            # Le fichier contient mot de passe + secret d'application : on
+            # restreint les permissions au seul propriétaire (lecture/écriture).
+            # Sans effet notable sous Windows, déterminant sous Linux (borne).
+            try:
+                os.chmod(config_file, 0o600)
+            except OSError as e:
+                print(f"Impossible de restreindre les permissions de {config_file}: {e}")
         except Exception as e:
             print(f"Erreur lors de la sauvegarde des paramètres: {e}")

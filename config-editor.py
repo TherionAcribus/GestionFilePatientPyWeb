@@ -38,7 +38,11 @@ class ConfigEditor(tk.Tk):
 
         # Variables
         self.variables = {}
-        
+
+        # Champs sensibles : masqués par défaut (points), avec une case
+        # « Afficher » pour les révéler ponctuellement.
+        secret_fields = {"password", "app_secret"}
+
         # Création des champs
         fields = [
             ("Serveur", [
@@ -81,11 +85,23 @@ class ConfigEditor(tk.Tk):
                 if field_type == bool:
                     self.variables[field_name] = tk.BooleanVar()
                     widget = ttk.Checkbutton(scrollable_frame, variable=self.variables[field_name])
+                    widget.grid(row=row, column=1, padx=5, pady=2, sticky="w")
+                elif field_name in secret_fields:
+                    self.variables[field_name] = tk.StringVar()
+                    entry = ttk.Entry(scrollable_frame, textvariable=self.variables[field_name], show="*")
+                    entry.grid(row=row, column=1, padx=5, pady=2, sticky="w")
+                    # Case « Afficher » : révèle/masque la valeur de CE champ.
+                    reveal_var = tk.BooleanVar(value=False)
+                    def _toggle(e=entry, v=reveal_var):
+                        e.config(show="" if v.get() else "*")
+                    ttk.Checkbutton(scrollable_frame, text="Afficher",
+                                    variable=reveal_var, command=_toggle).grid(
+                        row=row, column=2, padx=5, pady=2, sticky="w")
                 else:
                     self.variables[field_name] = tk.StringVar()
                     widget = ttk.Entry(scrollable_frame, textvariable=self.variables[field_name])
-                
-                widget.grid(row=row, column=1, padx=5, pady=2, sticky="w")
+                    widget.grid(row=row, column=1, padx=5, pady=2, sticky="w")
+
                 row += 1
 
         # Boutons

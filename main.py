@@ -4,6 +4,7 @@ import requests
 from requests.exceptions import RequestException
 import time
 import threading
+import json
 from printer import Printer, PrinterAPI, NETWORK_TIMEOUT
 from websocket_client import WebSocketClient
 import os
@@ -56,6 +57,38 @@ OFFLINE_HTML = """<!DOCTYPE html>
     <div class="spinner"></div>
     <h1>Borne hors ligne</h1>
     <p>Connexion au serveur en cours&hellip;<br>La borne sera disponible dès que possible.</p>
+  </div>
+</body>
+</html>"""
+
+
+# Écran affiché lorsque la borne refuse de démarrer pour cause de configuration
+# non sécurisée (identifiants/secret par défaut en production).
+CONFIG_ERROR_HTML = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: #3f0d0d; color: #fee2e2;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    cursor: none; user-select: none;
+  }
+  .wrap {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 2rem;
+  }
+  h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 1rem; }
+  p  { font-size: 1.3rem; margin: 0.3rem 0; color: #fecaca; max-width: 40rem; }
+</style>
+</head>
+<body oncontextmenu="return false">
+  <div class="wrap">
+    <h1>Configuration non sécurisée</h1>
+    <p>La borne refuse de démarrer : identifiants ou secret d'application par défaut.</p>
+    <p>Ouvrez l'éditeur de configuration et définissez des identifiants propres à la borne.</p>
   </div>
 </body>
 </html>"""
@@ -134,12 +167,30 @@ class WebViewClient:
         self._init_stop = threading.Event()
         self._init_thread = None
 
+        # Garde-fou : on REFUSE de démarrer une borne de production configurée
+        # avec des identifiants par défaut (admin/admin) ou le secret
+        # d'application par défaut. Sinon on exposerait des accès triviaux. En
+        # mode debug, on se contente d'un avertissement pour ne pas gêner le
+        # développement.
+        self._config_error = False
+        settings = Config().settings
+        if settings.has_insecure_default_credentials():
+            if settings.is_production:
+                self._config_error = True
+                print("REFUS DE DÉMARRAGE : identifiants/secret par défaut détectés "
+                      "en production. Configurez des identifiants propres à la borne.")
+            else:
+                print("AVERTISSEMENT : identifiants/secret par défaut (admin/admin). "
+                      "Refusé en production ; corrigez avant déploiement.")
+
         # Initialisation non bloquante : une boucle d'état persistante réessaie
         # l'obtention du token avec backoff, initialise l'imprimante dès qu'il
         # est disponible, puis bascule la borne en mode opérationnel. Le
         # démarrage ne dépend donc plus de la réussite immédiate de la connexion
-        # (récupération automatique après un démarrage hors ligne).
-        self.start_initialization()
+        # (récupération automatique après un démarrage hors ligne). On ne la
+        # lance PAS si la configuration est refusée.
+        if not self._config_error:
+            self.start_initialization()
 
     def create_window(self):
         """Crée et configure la fenêtre WebView"""
@@ -156,7 +207,11 @@ class WebViewClient:
         # « Borne hors ligne » (indépendant du serveur) plutôt que /patient :
         # aucune inscription ne peut donc être tentée hors ligne. /patient sera
         # chargée par _maybe_show_patient_page dès que la borne le devient.
-        if self.is_operational():
+        if self._config_error:
+            # Configuration refusée : on n'affiche NI /patient ni l'écran hors
+            # ligne, mais un écran d'erreur, et la borne reste non opérationnelle.
+            content_kwargs = {'html': CONFIG_ERROR_HTML}
+        elif self.is_operational():
             content_kwargs = {'url': f"{self.base_url}/patient"}
             self._patient_page_shown = True
         else:
@@ -434,24 +489,34 @@ class WebViewClient:
 
 
     def inject_login_script(self):
-        """Injecte et exécute le script de connexion automatique"""
+        """Injecte et exécute le script de connexion automatique.
+
+        Les identifiants sont sérialisés en JSON (json.dumps) AVANT insertion :
+        un guillemet, un antislash, un saut de ligne ou toute séquence spéciale
+        dans le mot de passe ne peut donc plus casser le script ni injecter de
+        code. json.dumps produit un littéral chaîne JavaScript sûr (échappe
+        guillemets/antislash/caractères de contrôle ; ensure_ascii encode les
+        non-ASCII en \\uXXXX). On insère le résultat SANS guillemets autour :
+        json.dumps les fournit déjà."""
+        username_js = json.dumps(self.username)
+        password_js = json.dumps(self.password)
         script = f"""
         function performLogin() {{
             console.log("Injecting login script");
             var usernameInput = document.querySelector('input[name="username"]');
             var passwordInput = document.querySelector('input[name="password"]');
             var rememberCheckbox = document.querySelector('input[name="remember"]');
-            
+
             if (usernameInput) {{
                 console.log("Found username input");
-                usernameInput.value = "{self.username}";
+                usernameInput.value = {username_js};
             }} else {{
                 console.log("Username input not found");
             }}
 
             if (passwordInput) {{
                 console.log("Found password input");
-                passwordInput.value = "{self.password}";
+                passwordInput.value = {password_js};
             }} else {{
                 console.log("Password input not found");
             }}

@@ -6,6 +6,9 @@ import threading
 import requests
 import queue
 import time
+import random
+import socket
+from datetime import datetime, timezone
 import usb.core  # pyusb : dépendance de python-escpos, fournit USBError
 from config import Config
 from array import array
@@ -74,9 +77,15 @@ NETWORK_TIMEOUT = (5, 10)
 # débranchée en cours de route), il retente périodiquement l'ouverture USB.
 HEALTH_CHECK_INTERVAL = 10
 
+# Backoff (secondes) pour les réessais d'envoi des statuts imprimante après un
+# échec réseau/serveur. Croissance exponentielle bornée + jitter pour éviter que
+# plusieurs bornes ne martèlent le serveur en cadence à sa remise en service.
+STATUS_BACKOFF_START = 1.0
+STATUS_BACKOFF_MAX = 30.0
+
 
 class PrinterStatusThread(threading.Thread):
-    def __init__(self, url, headers, status_queue, session=None):
+    def __init__(self, url, headers, status_queue, session=None, token_refresh_callback=None):
         super().__init__(daemon=True)
         self.url = url
         self._headers = dict(headers)
@@ -86,6 +95,11 @@ class PrinterStatusThread(threading.Thread):
         # Session persistante : réutilise la connexion TCP/TLS (keep-alive)
         # au lieu d'en rouvrir une à chaque envoi de statut.
         self.session = session or requests.Session()
+        # On ne ferme la session à l'arrêt que si on l'a créée nous-mêmes.
+        self._owns_session = session is None
+        # Callback (optionnel) invoqué sur 401 pour renouveler le token ;
+        # renvoie le nouveau token (str) ou None en cas d'échec.
+        self._token_refresh_callback = token_refresh_callback
 
     def update_headers(self, headers):
         """Met à jour les en-têtes (ex: nouveau token) de façon thread-safe."""
@@ -95,35 +109,115 @@ class PrinterStatusThread(threading.Thread):
     def stop(self):
         self._stop_event.set()
 
-    def run(self):
-        while not self._stop_event.is_set():
+    def _drain_latest(self):
+        """Vide la file et renvoie le statut le plus récent (ou None). Un statut
+        plus récent supersède celui en attente : le serveur n'a besoin que de
+        l'état courant de l'imprimante."""
+        latest = None
+        while True:
             try:
-                # Attente bornée : le thread se réveille régulièrement pour
-                # vérifier _stop_event, sans boucle d'attente active sur le CPU.
-                status_data = self.status_queue.get(timeout=0.5)
+                latest = self.status_queue.get_nowait()
             except queue.Empty:
-                continue
-            try:
-                with self._headers_lock:
-                    headers = dict(self._headers)
-                response = self.session.post(
-                    self.url,
-                    json=status_data,
-                    headers=headers,
-                    timeout=NETWORK_TIMEOUT
-                )
-                print(f"Status sent: {status_data}, Response: {response.status_code}")
-            except Exception as e:
-                print(f"Error sending printer status: {e}")
+                break
+        return latest
+
+    def _try_send(self, status_data):
+        """Tente un envoi. Renvoie 'ok' (2xx), 'unauthorized' (401) ou 'fail'
+        (erreur réseau ou tout autre code non-2xx)."""
+        with self._headers_lock:
+            headers = dict(self._headers)
+        try:
+            response = self.session.post(
+                self.url,
+                json=status_data,
+                headers=headers,
+                timeout=NETWORK_TIMEOUT
+            )
+        except Exception as e:
+            print(f"Error sending printer status: {e}")
+            return 'fail'
+
+        if 200 <= response.status_code < 300:
+            print(f"Status sent: {status_data}, Response: {response.status_code}")
+            return 'ok'
+        if response.status_code == 401:
+            print("Statut imprimante: 401 (token expiré ?)")
+            return 'unauthorized'
+        # Tout code non-2xx est un échec (avant : un 500 était considéré envoyé).
+        print(f"Statut imprimante rejeté par le serveur (HTTP {response.status_code})")
+        return 'fail'
+
+    def run(self):
+        # Statut en cours d'envoi, CONSERVÉ tant qu'il n'est pas acquitté (2xx) :
+        # une erreur réseau ne le fait plus disparaître.
+        pending = None
+        backoff = STATUS_BACKOFF_START
+        token_retries = 0  # limite les renouvellements de token immédiats
+        try:
+            while not self._stop_event.is_set():
+                if pending is None:
+                    # Pas de statut en attente : on en récupère un (attente
+                    # bornée pour rester réactif à l'arrêt).
+                    try:
+                        pending = self.status_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                else:
+                    # On a un statut non acquitté : s'il en est arrivé un plus
+                    # récent entretemps, il le remplace.
+                    newer = self._drain_latest()
+                    if newer is not None:
+                        pending = newer
+
+                result = self._try_send(pending)
+
+                if result == 'ok':
+                    pending = None
+                    backoff = STATUS_BACKOFF_START
+                    token_retries = 0
+                    continue
+
+                if (result == 'unauthorized' and self._token_refresh_callback
+                        and token_retries < 1):
+                    # Renouvellement du token puis réessai immédiat (une fois).
+                    token_retries += 1
+                    new_token = self._token_refresh_callback()
+                    if new_token:
+                        self.update_headers({
+                            'X-App-Token': new_token,
+                            'Content-Type': 'application/json'
+                        })
+                        continue  # réessai sans attendre avec le nouveau token
+
+                # Échec (réseau, non-2xx, ou 401 non renouvelable) : on GARDE
+                # pending et on attend avant de réessayer (backoff + jitter),
+                # de façon interruptible à l'arrêt.
+                token_retries = 0
+                delay = min(backoff, STATUS_BACKOFF_MAX)
+                delay += random.uniform(0, delay * 0.5)  # jitter
+                if self._stop_event.wait(delay):
+                    break
+                backoff = min(backoff * 2, STATUS_BACKOFF_MAX)
+        finally:
+            # Fermeture de la session HTTP à l'arrêt (si on en est propriétaire).
+            if self._owns_session:
+                try:
+                    self.session.close()
+                except Exception:
+                    pass
 
 
 class Printer:
-    def __init__(self, idVendor, idProduct, printer_model, web_url, app_token):
+    def __init__(self, idVendor, idProduct, printer_model, web_url, app_token,
+                 token_refresh_callback=None):
         self.idVendor = int(idVendor, 16)
         self.idProduct = int(idProduct, 16)
         self.printer_model = printer_model
         self.web_url = web_url
         self.app_token = app_token
+        # Identifiant de la borne joint à chaque statut (repli sur le hostname si
+        # non configuré) pour distinguer les bornes côté serveur.
+        self.borne_id = Config().settings.borne_id or socket.gethostname()
         self.p = None
         self.error = None
         self.encoding = 'utf-8'
@@ -148,7 +242,8 @@ class Printer:
                 'X-App-Token': self.app_token,
                 'Content-Type': 'application/json'
             },
-            self.status_queue
+            self.status_queue,
+            token_refresh_callback=token_refresh_callback
         )
         self.status_thread.start()
         
@@ -361,7 +456,15 @@ class Printer:
         
 
     def send_printer_status(self, error, error_message):
-        item = {'error': error, 'message': error_message}
+        # borne_id : pour distinguer les bornes côté serveur.
+        # timestamp : instant de GÉNÉRATION du statut (et non d'envoi), pour
+        # rester exploitable même si l'envoi n'aboutit qu'après des réessais.
+        item = {
+            'error': error,
+            'message': error_message,
+            'borne_id': self.borne_id,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        }
         # File bornée qui ne conserve que le DERNIER état : si un statut est
         # encore en attente (réseau lent/bloqué), on le remplace au lieu
         # d'empiler un backlog de statuts périmés. Le serveur n'a besoin que de

@@ -17,9 +17,12 @@ class Settings:
     printer_id_product: str = "0x0202"
     printer_model: str = "TM-T88II"
     app_secret: str = "votre_secret_app"
-    websocket_enabled: bool = False  
+    websocket_enabled: bool = False
     websocket_debug: bool = False
-    check_paper: bool = True  
+    check_paper: bool = True
+    # Identifiant de la borne joint aux statuts imprimante. Vide => le hostname
+    # de la machine est utilisé par défaut (voir Printer.__init__).
+    borne_id: str = ""
 
     @property
     def url(self) -> str:

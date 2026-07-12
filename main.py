@@ -329,12 +329,27 @@ class WebViewClient:
                 Config().settings.printer_id_product,
                 Config().settings.printer_model,
                 self.base_url,
-                self.app_token
+                self.app_token,
+                token_refresh_callback=self._refresh_app_token_for_printer
             )
             # Une fois l'imprimante initialisée, on la passe à l'API
             self.printer_api.set_print_callback(self.printer.print)
         else:
             raise Exception("Tentative d'initialisation de l'imprimante sans token")
+
+    def _refresh_app_token_for_printer(self):
+        """Renouvelle le token à la demande du thread de statut imprimante (ex:
+        401 sur l'envoi d'un statut) et le renvoie, ou None en cas d'échec. On
+        propage aussi le nouveau token à l'imprimante pour garder les en-têtes
+        cohérents avec le reste des appels."""
+        try:
+            self.get_app_token()
+            if self.printer:
+                self.printer.update_token(self.app_token)
+            return self.app_token
+        except Exception as e:
+            print(f"Échec du renouvellement du token (statut imprimante) : {e}")
+            return None
 
 
     def _on_window_shown(self):

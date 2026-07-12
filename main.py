@@ -5,6 +5,7 @@ from requests.exceptions import RequestException
 import time
 import threading
 import json
+import html
 from printer import Printer, PrinterAPI, NETWORK_TIMEOUT
 import os
 
@@ -62,8 +63,9 @@ OFFLINE_HTML = """<!DOCTYPE html>
 
 
 # Écran affiché lorsque la borne refuse de démarrer pour cause de configuration
-# non sécurisée (identifiants/secret par défaut en production).
-CONFIG_ERROR_HTML = """<!DOCTYPE html>
+# invalide ou non sécurisée. La liste des problèmes détectés est injectée à la
+# place de « __ERROR_ITEMS__ » (échappée) par build_config_error_html().
+CONFIG_ERROR_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
@@ -80,17 +82,32 @@ CONFIG_ERROR_HTML = """<!DOCTYPE html>
     align-items: center; justify-content: center; text-align: center; padding: 2rem;
   }
   h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 1rem; }
-  p  { font-size: 1.3rem; margin: 0.3rem 0; color: #fecaca; max-width: 40rem; }
+  p  { font-size: 1.3rem; margin: 0.3rem 0; color: #fecaca; max-width: 44rem; }
+  ul { text-align: left; font-size: 1.15rem; color: #fecaca; max-width: 44rem;
+       margin: 1rem auto; line-height: 1.5; }
+  li { margin: 0.35rem 0; }
 </style>
 </head>
 <body oncontextmenu="return false">
   <div class="wrap">
-    <h1>Configuration non sécurisée</h1>
-    <p>La borne refuse de démarrer : identifiants ou secret d'application par défaut.</p>
-    <p>Ouvrez l'éditeur de configuration et définissez des identifiants propres à la borne.</p>
+    <h1>Configuration invalide</h1>
+    <p>La borne refuse de démarrer pour les raisons suivantes :</p>
+    <ul>__ERROR_ITEMS__</ul>
+    <p>Ouvrez l'éditeur de configuration pour corriger ces points.</p>
   </div>
 </body>
 </html>"""
+
+
+def build_config_error_html(errors):
+    """Construit l'écran d'erreur de configuration en listant les problèmes.
+    Chaque message est échappé (html.escape) avant insertion : une valeur de
+    configuration ne peut donc pas injecter de balise dans l'écran."""
+    if errors:
+        items = "".join(f"<li>{html.escape(str(e))}</li>" for e in errors)
+    else:
+        items = "<li>Configuration invalide.</li>"
+    return CONFIG_ERROR_HTML_TEMPLATE.replace("__ERROR_ITEMS__", items)
 
 
 class WindowControlAPI:
@@ -126,10 +143,13 @@ class WebViewClient:
         self.connected = False
         self.username = Config().settings.username
         self.password = Config().settings.password
-        self.base_url = Config().settings.base_url
-        # Forcer l'utilisation de HTTPS si nécessaire pour éviter la perte du paramètre 'next' lors de la redirection
-        if self.base_url.startswith("http://"):
-            self.base_url = "https://" + self.base_url[len("http://"):]
+        # URL normalisée par un parseur (schéma/hôte en minuscules, sans slash
+        # final). On NE force PLUS silencieusement http -> https : le schéma
+        # configuré est respecté, et la validation ci-dessous n'autorise http
+        # que pour localhost ou en mode développement. Une URL http vers un
+        # serveur distant en production est donc REFUSÉE au démarrage plutôt que
+        # réécrite en douce (ce qui masquait les erreurs de configuration).
+        self.base_url = Config().settings.normalized_base_url()
         self.is_fullscreen = Config().settings.fullscreen
 
         # Ajout des configurations d'optimisation
@@ -162,21 +182,41 @@ class WebViewClient:
         self._init_stop = threading.Event()
         self._init_thread = None
 
-        # Garde-fou : on REFUSE de démarrer une borne de production configurée
-        # avec des identifiants par défaut (admin/admin) ou le secret
-        # d'application par défaut. Sinon on exposerait des accès triviaux. En
-        # mode debug, on se contente d'un avertissement pour ne pas gêner le
-        # développement.
+        # Validation stricte de la configuration AVANT démarrage. Une borne mal
+        # configurée (fichier illisible, URL invalide, http distant en prod,
+        # identifiants USB erronés, secret/identifiants vides, mauvais types)
+        # REFUSE de démarrer et affiche la liste des problèmes, au lieu de
+        # tourner avec une configuration partielle ou des valeurs par défaut
+        # appliquées en douce.
         self._config_error = False
+        self._config_errors = []
         settings = Config().settings
+
+        # Fichier de configuration illisible (JSON invalide, etc.) : signalé par
+        # Config au lieu d'un repli silencieux sur les valeurs par défaut.
+        if Config().load_error:
+            self._config_errors.append(Config().load_error)
+
+        # Validation de forme (URL/parseur, IDs USB, modèle, secrets, types).
+        self._config_errors.extend(settings.validate())
+
+        # Garde-fou sécurité : identifiants/secret par défaut (admin/admin). On
+        # REFUSE en production (accès triviaux) ; simple avertissement en debug.
         if settings.has_insecure_default_credentials():
             if settings.is_production:
-                self._config_error = True
-                print("REFUS DE DÉMARRAGE : identifiants/secret par défaut détectés "
-                      "en production. Configurez des identifiants propres à la borne.")
+                self._config_errors.append(
+                    "Identifiants ou secret d'application par défaut (admin/admin) "
+                    "détectés en production : configurez des identifiants propres "
+                    "à la borne.")
             else:
                 print("AVERTISSEMENT : identifiants/secret par défaut (admin/admin). "
                       "Refusé en production ; corrigez avant déploiement.")
+
+        if self._config_errors:
+            self._config_error = True
+            print("REFUS DE DÉMARRAGE : configuration invalide :")
+            for err in self._config_errors:
+                print(f"  - {err}")
 
         # Initialisation non bloquante : une boucle d'état persistante réessaie
         # l'obtention du token avec backoff, initialise l'imprimante dès qu'il
@@ -204,8 +244,9 @@ class WebViewClient:
         # chargée par _maybe_show_patient_page dès que la borne le devient.
         if self._config_error:
             # Configuration refusée : on n'affiche NI /patient ni l'écran hors
-            # ligne, mais un écran d'erreur, et la borne reste non opérationnelle.
-            content_kwargs = {'html': CONFIG_ERROR_HTML}
+            # ligne, mais un écran d'erreur listant les problèmes détectés, et la
+            # borne reste non opérationnelle.
+            content_kwargs = {'html': build_config_error_html(self._config_errors)}
         elif self.is_operational():
             content_kwargs = {'url': f"{self.base_url}/patient"}
             self._patient_page_shown = True

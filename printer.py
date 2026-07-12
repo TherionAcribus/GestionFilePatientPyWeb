@@ -84,6 +84,107 @@ STATUS_BACKOFF_START = 1.0
 STATUS_BACKOFF_MAX = 30.0
 
 
+# --- Contrôle des données d'impression ------------------------------------
+# La charge d'impression (base64) provient de la page servie, transmise via le
+# pont JavaScript. La borne est le DERNIER rempart avant l'imprimante physique :
+# on valide donc STRICTEMENT la charge avant de l'envoyer, pour qu'un contenu
+# malformé ou malveillant (serveur compromis, injection, MITM) ne puisse pas
+# piloter l'imprimante avec des commandes arbitraires, la saturer, ni gaspiller
+# le papier.
+
+# Tailles maximales (garde-fous DoS / gaspillage). Un ticket de file est court ;
+# ces bornes sont larges mais finies et cohérentes entre elles
+# (encodé ≈ 4/3 × décodé).
+MAX_ENCODED_LEN = 16384      # longueur max de la chaîne base64 (avant décodage)
+MAX_DECODED_BYTES = 12288    # taille max des octets décodés
+MAX_TICKET_CHARS = 6000      # longueur max du ticket (caractères)
+MAX_TICKET_LINES = 150       # nombre max de lignes du ticket
+
+# Séquences ESC/POS AUTORISÉES : exactement celles émises par le serveur
+# (Serveur/utils.py convert_markdown_to_escpos). Toute autre séquence de
+# contrôle débutant par ESC (0x1B) ou GS (0x1D) est refusée.
+_ALLOWED_ESCPOS_SEQUENCES = (
+    '\x1b\x61\x00', '\x1b\x61\x01',   # ESC a : alignement gauche / centré
+    '\x1d\x21\x00', '\x1d\x21\x11',   # GS ! : taille normale / double
+    '\x1b\x45\x00', '\x1b\x45\x01',   # ESC E : gras off / on
+    '\x1b\x2d\x00', '\x1b\x2d\x01',   # ESC - : souligné off / on
+)
+# Caractères de contrôle « texte » tolérés en dehors des séquences ESC/POS.
+_ALLOWED_CONTROL_CHARS = frozenset('\n\r\t')
+
+
+def _validate_decoded_ticket(text):
+    """Valide le TEXTE décodé d'un ticket. Lève ValueError (message SANS le
+    contenu du ticket) si le ticket dépasse les limites de longueur ou contient
+    un caractère / une commande de contrôle non autorisé(e).
+
+    Seuls sont admis : le texte imprimable, les sauts de ligne / tabulations, et
+    les séquences ESC/POS de mise en forme listées dans
+    _ALLOWED_ESCPOS_SEQUENCES."""
+    if len(text) > MAX_TICKET_CHARS:
+        raise ValueError(
+            f"ticket trop long ({len(text)} > {MAX_TICKET_CHARS} caractères)")
+    if text.count('\n') > MAX_TICKET_LINES:
+        raise ValueError(
+            f"ticket comportant trop de lignes (> {MAX_TICKET_LINES})")
+
+    i = 0
+    length = len(text)
+    while i < length:
+        ch = text[i]
+        if ch in ('\x1b', '\x1d'):
+            # ESC / GS : doit débuter une séquence de mise en forme autorisée.
+            matched = next(
+                (seq for seq in _ALLOWED_ESCPOS_SEQUENCES
+                 if text.startswith(seq, i)),
+                None,
+            )
+            if matched is None:
+                raise ValueError(
+                    f"commande de contrôle non autorisée à la position {i}")
+            i += len(matched)
+            continue
+        code = ord(ch)
+        if (code < 0x20 or code == 0x7f) and ch not in _ALLOWED_CONTROL_CHARS:
+            raise ValueError(
+                f"caractère de contrôle non autorisé (0x{code:02x}) "
+                f"à la position {i}")
+        i += 1
+
+
+def decode_and_validate_print_payload(data, encoding='utf-8'):
+    """Décode et valide STRICTEMENT une charge d'impression base64.
+
+    Renvoie le texte décodé prêt à imprimer, ou lève ValueError avec un message
+    ne contenant JAMAIS le contenu du ticket (journaux sûrs). Contrôles
+    successifs : type / vacuité, taille encodée, base64 strict (validate=True),
+    taille décodée, décodage dans l'encodage attendu, puis validation du contenu
+    (_validate_decoded_ticket)."""
+    if not isinstance(data, str):
+        raise ValueError("charge d'impression non textuelle")
+    if not data:
+        raise ValueError("charge d'impression vide")
+    if len(data) > MAX_ENCODED_LEN:
+        raise ValueError(
+            f"charge encodée trop volumineuse ({len(data)} > {MAX_ENCODED_LEN})")
+    # validate=True : refuse tout caractère hors alphabet base64 au lieu de
+    # l'ignorer silencieusement (décodage laxiste par défaut).
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (ValueError, TypeError):
+        raise ValueError("base64 invalide")
+    if len(raw) > MAX_DECODED_BYTES:
+        raise ValueError(
+            f"charge décodée trop volumineuse "
+            f"({len(raw)} > {MAX_DECODED_BYTES} octets)")
+    try:
+        text = raw.decode(encoding)
+    except UnicodeDecodeError:
+        raise ValueError(f"contenu non décodable en {encoding}")
+    _validate_decoded_ticket(text)
+    return text
+
+
 class PrinterStatusThread(threading.Thread):
     def __init__(self, url, headers, status_queue, session=None, token_refresh_callback=None):
         super().__init__(daemon=True)
@@ -387,13 +488,14 @@ class Printer:
                     'message': "Plus de papier dans l'imprimante."
                 }
 
-            # Décodage des données à imprimer (base64 -> texte). Isolé du reste
-            # pour distinguer une charge utile invalide d'une véritable erreur
-            # matérielle.
+            # Décodage ET validation stricte de la charge (base64 -> texte).
+            # Isolé du reste pour distinguer une charge utile invalide/refusée
+            # d'une véritable erreur matérielle. Le message d'erreur ne contient
+            # JAMAIS le contenu du ticket (journaux sûrs).
             try:
-                decoded = base64.b64decode(data).decode(self.encoding)
-            except Exception as e:
-                print(f"Données d'impression invalides : {e}")
+                decoded = decode_and_validate_print_payload(data, self.encoding)
+            except ValueError as e:
+                print(f"Données d'impression refusées : {e}")
                 self.send_printer_status('invalid_data', f"Données d'impression invalides : {e}")
                 return {
                     'success': False,
@@ -402,7 +504,8 @@ class Printer:
                 }
 
             try:
-                print("Impression du message :", decoded)
+                # On NE journalise PAS le contenu du ticket : seulement sa taille.
+                print(f"Impression d'un ticket ({len(decoded)} caractères)")
                 self.p.text(decoded)
                 self.p.cut()
                 # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur

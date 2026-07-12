@@ -1,9 +1,35 @@
 # config.py
 import json
 import os
+import re
 from dataclasses import dataclass, asdict, fields
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 import platform
+
+# Secret d'application par défaut (livré dans l'exemple) : à refuser en
+# production, cf. has_insecure_default_credentials / main.py.
+DEFAULT_APP_SECRET = "votre_secret_app"
+
+# Hôtes considérés comme « locaux » : seuls ceux-ci (ou le mode développement)
+# autorisent le HTTP en clair. Tout le reste doit passer en HTTPS.
+_LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
+
+# Identifiant USB : hexadécimal 16 bits, avec ou sans préfixe 0x (ex. 0x04b8).
+_USB_ID_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]{1,4}$")
+
+
+def _host_is_local(host: str) -> bool:
+    """Vrai si l'hôte désigne la machine locale (boucle locale). Utilisé pour
+    n'autoriser le HTTP en clair que localement."""
+    if not host:
+        return False
+    host = host.lower()
+    if host in _LOCAL_HOSTNAMES:
+        return True
+    # Toute la plage de bouclage 127.0.0.0/8.
+    return host.startswith("127.")
+
 
 @dataclass
 class Settings:
@@ -20,7 +46,7 @@ class Settings:
     printer_id_vendor: str = "0x04b8"
     printer_id_product: str = "0x0202"
     printer_model: str = "TM-T88II"
-    app_secret: str = "votre_secret_app"
+    app_secret: str = DEFAULT_APP_SECRET
     check_paper: bool = True
     # Identifiant de la borne joint aux statuts imprimante. Vide => le hostname
     # de la machine est utilisé par défaut (voir Printer.__init__).
@@ -28,7 +54,7 @@ class Settings:
 
     @property
     def url(self) -> str:
-        return f"{self.base_url}/patient"
+        return f"{self.normalized_base_url()}/patient"
 
     @property
     def is_production(self) -> bool:
@@ -41,13 +67,129 @@ class Settings:
         (cf. main.py) pour ne pas exposer une borne avec des accès triviaux."""
         return (
             (self.username == "admin" and self.password == "admin")
-            or self.app_secret in ("", "votre_secret_app")
+            or self.app_secret in ("", DEFAULT_APP_SECRET)
         )
+
+    # ------------------------------------------------------------------
+    # Validation / normalisation
+    # ------------------------------------------------------------------
+    def normalized_base_url(self) -> str:
+        """URL racine normalisée par un parseur : schéma et hôte en minuscules,
+        sans slash final. La borne (main.py) utilise cette valeur telle quelle.
+
+        Best-effort : si l'URL est invalide, ``validate()`` l'aura déjà signalée
+        et le démarrage sera refusé ; on renvoie ici la meilleure normalisation
+        possible sans lever."""
+        raw = (self.base_url or "").strip()
+        parsed = urlparse(raw)
+        scheme = (parsed.scheme or "").lower()
+        netloc = parsed.netloc.lower()
+        path = parsed.path.rstrip("/")
+        if not scheme or not netloc:
+            # URL non conforme (pas de schéma/hôte) : renvoyer la saisie nettoyée
+            # de son slash final, la validation refusera le démarrage.
+            return raw.rstrip("/")
+        return urlunparse((scheme, netloc, path, "", "", ""))
+
+    def base_url_errors(self) -> list:
+        """Erreurs de l'URL du serveur (liste de messages, vide si valide).
+
+        Le HTTP en clair n'est autorisé que pour un hôte local OU en mode
+        développement (debug) ; un serveur distant en production doit être en
+        HTTPS. On ne réécrit plus silencieusement http -> https : une URL non
+        conforme est signalée."""
+        if not isinstance(self.base_url, str):
+            return []  # l'erreur de type est signalée par ailleurs
+        raw = self.base_url.strip()
+        if not raw:
+            return ["L'URL du serveur ne peut pas être vide."]
+        try:
+            parsed = urlparse(raw)
+        except Exception:
+            return [f"L'URL du serveur est invalide : {self.base_url!r}."]
+        if parsed.scheme not in ("http", "https"):
+            return ["L'URL du serveur doit commencer par http:// ou https://."]
+        if not parsed.hostname:
+            return ["L'URL du serveur ne contient pas de nom d'hôte valide."]
+        try:
+            parsed.port  # lève ValueError si le port n'est pas numérique
+        except ValueError:
+            return ["Le port indiqué dans l'URL du serveur est invalide."]
+        if parsed.scheme == "http" and not (
+            _host_is_local(parsed.hostname) or self.debug is True
+        ):
+            return [
+                "HTTP n'est autorisé que pour localhost ou en mode développement "
+                "(debug). Utilisez https:// pour un serveur distant."
+            ]
+        return []
+
+    def usb_id_errors(self, field_name: str, value) -> list:
+        """Erreurs d'un identifiant USB (vendeur/produit) : format hexadécimal
+        16 bits (0x0000..0xFFFF)."""
+        if not isinstance(value, str):
+            return []  # l'erreur de type est signalée par ailleurs
+        raw = value.strip()
+        if not _USB_ID_RE.match(raw):
+            return [
+                f"L'identifiant USB « {field_name} » doit être hexadécimal "
+                f"(ex. 0x04b8) ; valeur reçue : {value!r}."
+            ]
+        try:
+            number = int(raw, 16)
+        except ValueError:
+            return [f"L'identifiant USB « {field_name} » est invalide : {value!r}."]
+        if not (0 <= number <= 0xFFFF):
+            return [
+                f"L'identifiant USB « {field_name} » doit être compris entre "
+                "0x0000 et 0xFFFF."
+            ]
+        return []
+
+    def validate(self) -> list:
+        """Valide la configuration AVANT démarrage. Renvoie la liste des
+        problèmes (vide = configuration valide). Vérifie les types, l'URL
+        (parseur + règle HTTP/HTTPS), les identifiants USB, le modèle, les
+        identifiants d'authentification et le secret d'application."""
+        errors = []
+
+        # Types : une valeur JSON du mauvais type ne doit pas passer en douce.
+        for name in ("fullscreen", "debug", "hide_cursor", "check_paper"):
+            if not isinstance(getattr(self, name), bool):
+                errors.append(f"Le champ « {name} » doit être un booléen (vrai/faux).")
+        for name in (
+            "base_url", "username", "password", "printer_id_vendor",
+            "printer_id_product", "printer_model", "app_secret", "borne_id",
+        ):
+            if not isinstance(getattr(self, name), str):
+                errors.append(
+                    f"Le champ « {name} » doit être une chaîne de caractères."
+                )
+
+        # URL du serveur.
+        errors.extend(self.base_url_errors())
+
+        # Authentification borne.
+        if isinstance(self.username, str) and not self.username.strip():
+            errors.append("Le nom d'utilisateur ne peut pas être vide.")
+        if isinstance(self.password, str) and self.password == "":
+            errors.append("Le mot de passe ne peut pas être vide.")
+        if isinstance(self.app_secret, str) and not self.app_secret.strip():
+            errors.append("Le secret d'application ne peut pas être vide.")
+
+        # Imprimante.
+        errors.extend(self.usb_id_errors("printer_id_vendor", self.printer_id_vendor))
+        errors.extend(self.usb_id_errors("printer_id_product", self.printer_id_product))
+        if isinstance(self.printer_model, str) and not self.printer_model.strip():
+            errors.append("Le modèle d'imprimante ne peut pas être vide.")
+
+        return errors
+
 
 class Config:
     """Gestionnaire de configuration"""
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(Config, cls).__new__(cls)
@@ -60,12 +202,16 @@ class Config:
         self.config_path = self._get_config_path()
         self._ensure_config_dir()
         self.settings = None
+        # Renseigné si le fichier de configuration existe mais est illisible :
+        # la borne REFUSE alors de démarrer (main.py) au lieu de tourner en
+        # douce avec les valeurs par défaut (cf. load_settings).
+        self.load_error = None
         self.load_settings()
 
     def _get_config_path(self) -> Path:
         """Détermine le chemin de configuration selon le système d'exploitation"""
         system = platform.system()
-        
+
         if system == "Windows":
             # Sur Windows, utilise AppData/Local
             base_path = os.path.join(os.environ["LOCALAPPDATA"], self.app_name)
@@ -74,7 +220,7 @@ class Config:
             base_path = os.path.join(str(Path.home()), ".config", self.app_name)
         else:
             raise OSError(f"Système d'exploitation non supporté: {system}")
-            
+
         return Path(base_path)
 
     def _ensure_config_dir(self):
@@ -82,49 +228,65 @@ class Config:
         self.config_path.mkdir(parents=True, exist_ok=True)
 
     def load_settings(self):
-        """Charge les paramètres depuis le fichier JSON"""
+        """Charge les paramètres depuis le fichier JSON.
+
+        Si le fichier existe mais est illisible (JSON invalide, contenu qui
+        n'est pas un objet...), on NE remplace PLUS silencieusement la
+        configuration par les valeurs par défaut : on mémorise l'erreur dans
+        ``self.load_error`` pour que la borne refuse de démarrer et l'affiche.
+        Les valeurs par défaut sont tout de même chargées en mémoire pour que
+        l'objet reste utilisable (éditeur de configuration)."""
         config_file = self.config_path / "settings.json"
-        
-        try:
-            if config_file.exists():
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # Ignore les clés inconnues (ex : options retirées d'une
-                    # version antérieure comme websocket_enabled/websocket_debug).
-                    # Sans ce filtrage, Settings(**data) lèverait une TypeError et
-                    # le repli sur les valeurs par défaut réinitialiserait TOUTE
-                    # la configuration d'une borne déjà déployée (URL, identifiants,
-                    # imprimante...).
-                    known = {f.name for f in fields(Settings)}
-                    ignored = set(data) - known
-                    if ignored:
-                        print(f"Clés de configuration ignorées (inconnues): "
-                              f"{', '.join(sorted(ignored))}")
-                    filtered = {k: v for k, v in data.items() if k in known}
-                    # Crée une nouvelle instance de Settings avec les données du fichier
-                    self.settings = Settings(**filtered)
-            else:
-                # Utilise les valeurs par défaut
-                self.settings = Settings()
-                # Sauvegarde les valeurs par défaut
+        self.load_error = None
+
+        if not config_file.exists():
+            # Premier démarrage : on écrit les valeurs par défaut. Un échec
+            # d'écriture n'est pas fatal (on garde les défauts en mémoire).
+            self.settings = Settings()
+            try:
                 self.save_settings()
+            except Exception as e:
+                print(f"Impossible d'écrire la configuration par défaut: {e}")
+            return
+
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("le contenu n'est pas un objet JSON")
+            # Ignore les clés inconnues (ex : options retirées d'une version
+            # antérieure comme websocket_enabled/websocket_debug). Sans ce
+            # filtrage, Settings(**data) lèverait une TypeError.
+            known = {f.name for f in fields(Settings)}
+            ignored = set(data) - known
+            if ignored:
+                print(f"Clés de configuration ignorées (inconnues): "
+                      f"{', '.join(sorted(ignored))}")
+            filtered = {k: v for k, v in data.items() if k in known}
+            self.settings = Settings(**filtered)
         except Exception as e:
+            # Config illisible : on NE bascule PAS en douce sur les défauts. On
+            # signale l'erreur (main.py refusera de démarrer) tout en gardant un
+            # objet utilisable.
             print(f"Erreur lors du chargement des paramètres: {e}")
+            self.load_error = f"Fichier de configuration illisible : {e}"
             self.settings = Settings()
 
     def save_settings(self):
-        """Sauvegarde les paramètres dans le fichier JSON"""
+        """Sauvegarde les paramètres dans le fichier JSON.
+
+        Les erreurs d'écriture NE sont PLUS avalées : elles se propagent à
+        l'appelant (éditeur de configuration) pour être remontées à l'interface
+        au lieu d'afficher un faux « succès »."""
         config_file = self.config_path / "settings.json"
 
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(asdict(self.settings), f, indent=4)
+        # Le fichier contient mot de passe + secret d'application : on
+        # restreint les permissions au seul propriétaire (lecture/écriture).
+        # Sans effet notable sous Windows, déterminant sous Linux (borne).
+        # Un échec de chmod n'invalide pas la sauvegarde elle-même.
         try:
-            with open(config_file, 'w', encoding='utf-8') as f:
-                json.dump(asdict(self.settings), f, indent=4)
-            # Le fichier contient mot de passe + secret d'application : on
-            # restreint les permissions au seul propriétaire (lecture/écriture).
-            # Sans effet notable sous Windows, déterminant sous Linux (borne).
-            try:
-                os.chmod(config_file, 0o600)
-            except OSError as e:
-                print(f"Impossible de restreindre les permissions de {config_file}: {e}")
-        except Exception as e:
-            print(f"Erreur lors de la sauvegarde des paramètres: {e}")
+            os.chmod(config_file, 0o600)
+        except OSError as e:
+            print(f"Impossible de restreindre les permissions de {config_file}: {e}")

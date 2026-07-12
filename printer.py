@@ -2,16 +2,21 @@ from escpos.printer import Usb
 from escpos.exceptions import USBNotFoundError
 from escpos.constants import RT_STATUS_PAPER
 import base64
+import logging
 import threading
 import requests
 import queue
 import time
 import random
 import socket
+import uuid
 from datetime import datetime, timezone
 import usb.core  # pyusb : dépendance de python-escpos, fournit USBError
 from config import Config
 from array import array
+
+logger = logging.getLogger("borne.printer")
+status_logger = logging.getLogger("borne.status")
 
 
 class CustomUsb(Usb):
@@ -235,17 +240,21 @@ class PrinterStatusThread(threading.Thread):
                 timeout=NETWORK_TIMEOUT
             )
         except Exception as e:
-            print(f"Error sending printer status: {e}")
+            status_logger.warning("Échec d'envoi du statut imprimante: %s", e)
             return 'fail'
 
         if 200 <= response.status_code < 300:
-            print(f"Status sent: {status_data}, Response: {response.status_code}")
+            # On journalise le code du statut (error) et la réponse, pas le
+            # message complet, pour rester concis.
+            status_logger.debug("Statut imprimante envoyé: %s (HTTP %s)",
+                                status_data.get('error'), response.status_code)
             return 'ok'
         if response.status_code == 401:
-            print("Statut imprimante: 401 (token expiré ?)")
+            status_logger.info("Statut imprimante: 401 (token expiré ?)")
             return 'unauthorized'
         # Tout code non-2xx est un échec (avant : un 500 était considéré envoyé).
-        print(f"Statut imprimante rejeté par le serveur (HTTP {response.status_code})")
+        status_logger.warning("Statut imprimante rejeté par le serveur (HTTP %s)",
+                              response.status_code)
         return 'fail'
 
     def run(self):
@@ -363,7 +372,7 @@ class Printer:
                            '3. Ajoutez votre utilisateur au groupe dialout :\n'
                            'sudo usermod -a -G dialout $USER\n'
                            '4. Déconnectez-vous et reconnectez-vous')
-                print(error_msg)
+                logger.error(error_msg)
                 self.send_printer_status('error_grant', error_msg)
             else:
                 self.send_printer_status('error_init', f"Erreur d'initialisation : {str(e)}")
@@ -383,24 +392,23 @@ class Printer:
             self._close_printer()
             try:
                 self.p = CustomUsb(self.idVendor, self.idProduct, profile=self.printer_model)
-                print("printer", self.p)
                 self.send_printer_status('init_ok', "Imprimante USB initialisée avec succès.")
                 self.error = False
-                print("Imprimante initialisée avec succès.")
+                logger.info("Imprimante USB initialisée avec succès (état USB: connectée).")
             except USBNotFoundError:
-                print("Avertissement : Imprimante USB non trouvée.")
+                logger.warning("Imprimante USB non trouvée (état USB: absente).")
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_not_found', "Imprimante USB non trouvée.")
             except ValueError as e:
                 if "langid" in str(e):
                     raise  # Remonter l'erreur pour une gestion spéciale
-                print(f"Erreur lors de l'initialisation : {e}")
+                logger.error("Erreur lors de l'initialisation de l'imprimante : %s", e)
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
             except Exception as e:
-                print(f"Erreur lors de l'initialisation : {e}")
+                logger.error("Erreur lors de l'initialisation de l'imprimante : %s", e)
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
@@ -416,7 +424,7 @@ class Printer:
             try:
                 self.p.close()
             except Exception as e:
-                print(f"Fermeture du handle imprimante: {e}")
+                logger.debug("Fermeture du handle imprimante: %s", e)
             finally:
                 self.p = None
 
@@ -437,7 +445,7 @@ class Printer:
             try:
                 self._try_reconnect()
             except Exception as e:
-                print(f"Surveillance imprimante: {e}")
+                logger.debug("Surveillance imprimante: %s", e)
 
     def _try_reconnect(self):
         """Réessaie d'ouvrir l'imprimante si elle n'est pas connectée. Ne fait
@@ -451,13 +459,19 @@ class Printer:
                 # langid = permissions USB insuffisantes : un réessai ne corrige
                 # rien, on évite de spammer les statuts serveur.
                 if "langid" in str(e):
-                    print("Réessai imprimante: permissions USB toujours insuffisantes")
+                    logger.warning("Réessai imprimante: permissions USB toujours insuffisantes")
                 else:
-                    print(f"Réessai imprimante échoué: {e}")
+                    logger.debug("Réessai imprimante échoué: %s", e)
             except Exception as e:
-                print(f"Réessai imprimante échoué: {e}")
+                logger.debug("Réessai imprimante échoué: %s", e)
 
     def print(self, data):
+        # Identifiant de travail : corrèle toutes les lignes de log d'UNE même
+        # impression (accepté -> succès/échec), sans jamais journaliser le
+        # contenu du ticket.
+        job_id = uuid.uuid4().hex[:8]
+        log = logging.LoggerAdapter(logger, {'job_id': job_id})
+
         # Tout le chemin d'impression est sérialisé : une impression déclenchée
         # via le pont JavaScript (PrinterAPI) et un accès concurrent du thread de
         # statut/santé imprimante (vérification papier, reconnexion USB) ne
@@ -472,7 +486,7 @@ class Printer:
                 paper_code = 'paper_ok'
 
             if self.p is None:
-                print("Erreur : L'imprimante n'est pas initialisée correctement.")
+                log.error("Impression impossible : imprimante non initialisée.")
                 self.error = True
                 self.send_printer_status('error_init', "Imprimante non initialisée correctement.")
                 return {
@@ -482,6 +496,7 @@ class Printer:
                 }
 
             if paper_code == 'no_paper':
+                log.warning("Impression refusée : plus de papier.")
                 return {
                     'success': False,
                     'code': 'no_paper',
@@ -495,7 +510,7 @@ class Printer:
             try:
                 decoded = decode_and_validate_print_payload(data, self.encoding)
             except ValueError as e:
-                print(f"Données d'impression refusées : {e}")
+                log.warning("Données d'impression refusées : %s", e)
                 self.send_printer_status('invalid_data', f"Données d'impression invalides : {e}")
                 return {
                     'success': False,
@@ -503,15 +518,16 @@ class Printer:
                     'message': "Données d'impression invalides."
                 }
 
+            # Travail accepté : on journalise la taille, jamais le contenu.
+            log.info("Travail d'impression accepté (%d caractères).", len(decoded))
             try:
-                # On NE journalise PAS le contenu du ticket : seulement sa taille.
-                print(f"Impression d'un ticket ({len(decoded)} caractères)")
                 self.p.text(decoded)
                 self.p.cut()
                 # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
                 if self.error:
                     self.error = False
                     self.send_printer_status('print_ok', "Impression réussie.")
+                log.info("Impression réussie.")
                 return {
                     'success': True,
                     'code': 'print_ok',
@@ -522,7 +538,7 @@ class Printer:
                 # Erreur USB matérielle (débranchement, pipe cassé, périphérique
                 # occupé...) : le handle est probablement mort. On le ferme pour
                 # que le thread de santé le rouvre proprement.
-                print(f"Erreur USB lors de l'impression : {e}")
+                log.error("Erreur USB lors de l'impression : %s", e)
                 self._reset_connection()
                 self.send_printer_status('error_print', f"Erreur USB lors de l'impression : {e}")
                 return {
@@ -535,6 +551,7 @@ class Printer:
                 if "langid" in str(e):
                     # langid pendant l'impression = communication USB rompue :
                     # on réinitialise le handle en plus de signaler l'erreur.
+                    log.error("Erreur de permissions USB lors de l'impression.")
                     self._reset_connection()
                     self.send_printer_status('error_grant', "Erreur de permissions USB. Vérifiez les droits d'accès.")
                     return {
@@ -542,6 +559,7 @@ class Printer:
                         'code': 'error_grant',
                         'message': "Erreur de permissions USB. Vérifiez les droits d'accès."
                     }
+                log.error("Erreur lors de l'impression : %s", e)
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
                 return {
                     'success': False,
@@ -550,7 +568,7 @@ class Printer:
                 }
 
             except Exception as e:
-                print(f"Erreur lors de l'impression : {e}")
+                log.error("Erreur lors de l'impression : %s", e)
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
                 return {
                     'success': False,
@@ -608,7 +626,7 @@ class Printer:
         """
         Vérifie l'état du papier en utilisant les méthodes python-escpos
         """
-        print("verification du papier")
+        logger.debug("Vérification du papier")
         # Accès USB sérialisé (verrou réentrant : ok si déjà détenu par print()
         # ou initialize_printer()).
         with self._usb_lock:
@@ -635,6 +653,6 @@ class Printer:
                     return 'paper_ok'
 
             except Exception as e:
-                print(f"Erreur lors de la vérification papier: {str(e)}")
+                logger.warning("Erreur lors de la vérification papier: %s", e)
                 self.send_printer_status("error_paper_check", f"Erreur lors de la vérification papier: {str(e)}")
                 return 'paper_check_error'

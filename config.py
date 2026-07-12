@@ -1,11 +1,14 @@
 # config.py
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import platform
+
+logger = logging.getLogger("borne.config")
 
 # Secret d'application par défaut (livré dans l'exemple) : à refuser en
 # production, cf. has_insecure_default_credentials / main.py.
@@ -246,7 +249,7 @@ class Config:
             try:
                 self.save_settings()
             except Exception as e:
-                print(f"Impossible d'écrire la configuration par défaut: {e}")
+                logger.error("Impossible d'écrire la configuration par défaut: %s", e)
             return
 
         try:
@@ -260,15 +263,15 @@ class Config:
             known = {f.name for f in fields(Settings)}
             ignored = set(data) - known
             if ignored:
-                print(f"Clés de configuration ignorées (inconnues): "
-                      f"{', '.join(sorted(ignored))}")
+                logger.warning("Clés de configuration ignorées (inconnues): %s",
+                               ', '.join(sorted(ignored)))
             filtered = {k: v for k, v in data.items() if k in known}
             self.settings = Settings(**filtered)
         except Exception as e:
             # Config illisible : on NE bascule PAS en douce sur les défauts. On
             # signale l'erreur (main.py refusera de démarrer) tout en gardant un
             # objet utilisable.
-            print(f"Erreur lors du chargement des paramètres: {e}")
+            logger.error("Erreur lors du chargement des paramètres: %s", e)
             self.load_error = f"Fichier de configuration illisible : {e}"
             self.settings = Settings()
 
@@ -289,4 +292,5 @@ class Config:
         try:
             os.chmod(config_file, 0o600)
         except OSError as e:
-            print(f"Impossible de restreindre les permissions de {config_file}: {e}")
+            logger.warning("Impossible de restreindre les permissions de %s: %s",
+                           config_file, e)

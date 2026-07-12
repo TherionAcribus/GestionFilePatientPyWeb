@@ -1,8 +1,12 @@
 # config_editor.py
+import logging
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
+import logging_config
 from config import Config, Settings
+
+logger = logging.getLogger("borne.editor")
 
 # Timeout (connexion, lecture) du test de joignabilité du serveur.
 _TEST_TIMEOUT = (5, 10)
@@ -299,5 +303,7 @@ class ConfigEditor(tk.Tk):
 
 
 if __name__ == "__main__":
+    logging_config.setup_logging()
+    logger.info("Ouverture de l'éditeur de configuration.")
     app = ConfigEditor()
     app.mainloop()

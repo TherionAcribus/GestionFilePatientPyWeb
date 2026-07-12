@@ -6,8 +6,12 @@ import time
 import threading
 import json
 import html
+import logging
+import logging_config
 from printer import Printer, PrinterAPI, NETWORK_TIMEOUT
 import os
+
+logger = logging.getLogger("borne.main")
 
 # Renouvellement du token avant son expiration (24 h côté serveur). Marge d'1 h
 # pour absorber d'éventuels échecs/réessais réseau.
@@ -143,6 +147,10 @@ class WebViewClient:
         self.connected = False
         self.username = Config().settings.username
         self.password = Config().settings.password
+        # Masque le mot de passe et le secret d'application dans TOUS les logs
+        # (défense en profondeur : même si un message les contenait par erreur).
+        logging_config.register_secret(self.password)
+        logging_config.register_secret(Config().settings.app_secret)
         # URL normalisée par un parseur (schéma/hôte en minuscules, sans slash
         # final). On NE force PLUS silencieusement http -> https : le schéma
         # configuré est respecté, et la validation ci-dessous n'autorise http
@@ -209,14 +217,13 @@ class WebViewClient:
                     "détectés en production : configurez des identifiants propres "
                     "à la borne.")
             else:
-                print("AVERTISSEMENT : identifiants/secret par défaut (admin/admin). "
-                      "Refusé en production ; corrigez avant déploiement.")
+                logger.warning("Identifiants/secret par défaut (admin/admin). "
+                               "Refusé en production ; corrigez avant déploiement.")
 
         if self._config_errors:
             self._config_error = True
-            print("REFUS DE DÉMARRAGE : configuration invalide :")
-            for err in self._config_errors:
-                print(f"  - {err}")
+            logger.error("Refus de démarrage, configuration invalide : %s",
+                         " ; ".join(self._config_errors))
 
         # Initialisation non bloquante : une boucle d'état persistante réessaie
         # l'obtention du token avec backoff, initialise l'imprimante dès qu'il
@@ -336,12 +343,17 @@ class WebViewClient:
                 response = self.session.post(url, data=data, timeout=NETWORK_TIMEOUT)
                 if response.status_code == 200:
                     self.app_token = response.json()['token']
-                    print("Token obtenu avec succès")
+                    # Enregistre le jeton pour qu'il soit masqué s'il apparaît
+                    # un jour dans un message de log (défense en profondeur).
+                    logging_config.register_secret(self.app_token)
+                    logger.info("Token d'application obtenu (connexion serveur OK).")
                     return True
                 else:
-                    print(f"Échec de l'obtention du token (tentative {attempt + 1}/{max_retries})")
+                    logger.warning("Échec de l'obtention du token (tentative %d/%d, HTTP %s).",
+                                   attempt + 1, max_retries, response.status_code)
             except RequestException as e:
-                print(f"Erreur réseau (tentative {attempt + 1}/{max_retries}): {e}")
+                logger.warning("Erreur réseau à l'obtention du token (tentative %d/%d): %s",
+                               attempt + 1, max_retries, e)
             
             if attempt < max_retries - 1:  # Ne pas attendre après la dernière tentative
                 time.sleep(retry_delay)
@@ -364,10 +376,10 @@ class WebViewClient:
                     if self.printer:
                         self.printer.update_token(self.app_token)
                     self._next_refresh_delay = TOKEN_REFRESH_INTERVAL
-                    print("Token renouvelé avec succès")
+                    logger.info("Token d'application renouvelé.")
                 except Exception as e:
                     self._next_refresh_delay = 300  # réessai dans 5 min
-                    print(f"Échec du renouvellement du token, réessai bientôt : {e}")
+                    logger.warning("Échec du renouvellement du token, réessai bientôt : %s", e)
 
         self._token_refresh_thread = threading.Thread(target=_loop, daemon=True)
         self._token_refresh_thread.start()
@@ -393,11 +405,11 @@ class WebViewClient:
                     self.start_token_refresh()
                     self.connected = True
                     self._set_operational(True)
-                    print("Borne opérationnelle")
+                    logger.info("Borne opérationnelle.")
                     return
                 except Exception as e:
                     self.connected = False
-                    print(f"Initialisation impossible, nouvel essai dans {delay}s : {e}")
+                    logger.warning("Initialisation impossible, nouvel essai dans %ss : %s", delay, e)
                     # Attente interruptible : réveil immédiat à la fermeture.
                     if self._init_stop.wait(delay):
                         return
@@ -433,7 +445,7 @@ class WebViewClient:
         except Exception as e:
             with self._operational_lock:
                 self._patient_page_shown = False
-            print(f"Erreur lors du chargement de /patient : {e}")
+            logger.error("Erreur lors du chargement de /patient : %s", e)
 
     def initialize_printer(self):
         """Initialise l'imprimante une fois le token obtenu"""
@@ -462,7 +474,7 @@ class WebViewClient:
                 self.printer.update_token(self.app_token)
             return self.app_token
         except Exception as e:
-            print(f"Échec du renouvellement du token (statut imprimante) : {e}")
+            logger.warning("Échec du renouvellement du token (statut imprimante) : %s", e)
             return None
 
 
@@ -475,7 +487,7 @@ class WebViewClient:
     def on_loaded(self):
         """Gestionnaire d'événement pour le chargement de la page"""
         current_url = self.window.get_current_url()
-        print("Page loaded:", current_url)
+        logger.debug("Page chargée : %s", current_url)
 
         # L'écran local « Borne hors ligne » (chargé via html=) gère lui-même sa
         # présentation ; les injections kiosque ne concernent que les pages
@@ -497,7 +509,7 @@ class WebViewClient:
         # Si l'utilisateur est redirigé vers la racine après authentification,
         # on recharge explicitement la page /patient
         if current_url.rstrip('/') == self.base_url.rstrip('/'):
-            print("Redirection inattendue vers la racine détectée, chargement de /patient")
+            logger.info("Redirection inattendue vers la racine détectée, chargement de /patient")
             self.window.load_url(f"{self.base_url}/patient")
 
     def toggle_fullscreen(self):
@@ -632,13 +644,22 @@ class WebViewClient:
             os.environ['WEBKIT_FORCE_ACCELERATED_COMPOSITING'] = '1'
             os.environ["PYWEBVIEW_GUI"] = "qt"
             self.create_window()
+            logger.info("Fenêtre créée, démarrage de l'interface (fullscreen=%s).",
+                        Config().settings.fullscreen)
             webview.start(debug=Config().settings.debug)
         finally:
+            logger.info("Arrêt de la borne.")
             self._init_stop.set()
             self._token_refresh_stop.set()
             if self.printer:
                 self.printer.cleanup()
 
 if __name__ == '__main__':
+    # Journalisation en tout premier, pour capturer même les messages émis
+    # pendant le chargement de la configuration. Le niveau est ajusté ensuite
+    # selon le réglage debug.
+    logging_config.setup_logging()
+    logger.info("Démarrage de la borne PharmaFile.")
     client = WebViewClient()
+    logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()

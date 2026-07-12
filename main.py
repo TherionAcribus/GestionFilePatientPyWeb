@@ -12,6 +12,54 @@ import os
 # pour absorber d'éventuels échecs/réessais réseau.
 TOKEN_REFRESH_INTERVAL = 23 * 3600
 
+# Boucle d'initialisation persistante : au démarrage (et tant que la borne n'a
+# pas obtenu son token), on réessaie avec un backoff exponentiel borné au lieu
+# d'abandonner. Tant que la borne n'est pas opérationnelle, l'écran local
+# « Borne hors ligne » ci-dessous est affiché et la page /patient n'est PAS
+# chargée : aucune inscription (a fortiori nécessitant un ticket) ne peut donc
+# aboutir.
+INIT_BACKOFF_START = 5          # premier réessai après 5 s
+INIT_BACKOFF_MAX = 300          # plafond : 5 min entre deux tentatives
+
+# Écran affiché localement par l'application (donc visible même si le serveur
+# est injoignable) tant que la borne n'est pas opérationnelle. Il masque le
+# curseur et bloque le menu contextuel comme les pages kiosque servies.
+OFFLINE_HTML = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: #0f172a; color: #e2e8f0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    cursor: none; user-select: none;
+  }
+  .wrap {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 2rem;
+  }
+  .spinner {
+    width: 84px; height: 84px; margin-bottom: 2.5rem;
+    border: 8px solid rgba(226, 232, 240, 0.2);
+    border-top-color: #38bdf8; border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h1 { font-size: 2.6rem; font-weight: 700; margin: 0 0 1rem; }
+  p  { font-size: 1.4rem; margin: 0; color: #94a3b8; }
+</style>
+</head>
+<body oncontextmenu="return false">
+  <div class="wrap">
+    <div class="spinner"></div>
+    <h1>Borne hors ligne</h1>
+    <p>Connexion au serveur en cours&hellip;<br>La borne sera disponible dès que possible.</p>
+  </div>
+</body>
+</html>"""
+
 
 class WindowControlAPI:
     """API pour la gestion des contrôles de la fenêtre"""
@@ -77,17 +125,21 @@ class WebViewClient:
         self.printer_api = PrinterAPI()
         self.window_api = WindowControlAPI()
 
-        # Tentative d'obtention du token au démarrage
-        try:
-            self.get_app_token()
-            self.connected = True
-            print("Connexion établie avec succès")
-            self.initialize_printer()
-            # Renouvellement périodique du token (borne en fonctionnement continu)
-            self.start_token_refresh()
-        except Exception as e:
-            print("Erreur lors de l'initialisation :", e)
-            self.connected = False
+        # État opérationnel de la borne. Tant qu'il est faux, l'écran local
+        # « Borne hors ligne » est affiché et /patient n'est pas chargée.
+        self.operational = False
+        self._operational_lock = threading.Lock()
+        self._window_ready = threading.Event()
+        self._patient_page_shown = False
+        self._init_stop = threading.Event()
+        self._init_thread = None
+
+        # Initialisation non bloquante : une boucle d'état persistante réessaie
+        # l'obtention du token avec backoff, initialise l'imprimante dès qu'il
+        # est disponible, puis bascule la borne en mode opérationnel. Le
+        # démarrage ne dépend donc plus de la réussite immédiate de la connexion
+        # (récupération automatique après un démarrage hors ligne).
+        self.start_initialization()
 
     def create_window(self):
         """Crée et configure la fenêtre WebView"""
@@ -100,18 +152,31 @@ class WebViewClient:
 
         combined_api = CombinedAPI(self.printer_api, self.window_api)
 
+        # Tant que la borne n'est pas opérationnelle, on affiche l'écran local
+        # « Borne hors ligne » (indépendant du serveur) plutôt que /patient :
+        # aucune inscription ne peut donc être tentée hors ligne. /patient sera
+        # chargée par _maybe_show_patient_page dès que la borne le devient.
+        if self.is_operational():
+            content_kwargs = {'url': f"{self.base_url}/patient"}
+            self._patient_page_shown = True
+        else:
+            content_kwargs = {'html': OFFLINE_HTML}
+
         self.window = webview.create_window(
             title="PharmaFile",
-            url=f"{self.base_url}/patient",
             fullscreen=Config().settings.fullscreen,
             js_api=combined_api,
             background_color='#FFFFFF',
+            **content_kwargs,
             **self.webview_settings  # Applique les configurations d'optimisation
         )
-        
+
         # Ajout des gestionnaires d'événements
         self.window.events.loaded += self.on_loaded
         self.window.events.loaded += lambda: self.disable_context_menu_and_cursor()
+        # La fenêtre est prête : on peut désormais naviguer vers /patient si la
+        # borne est (ou devient) opérationnelle.
+        self.window.events.shown += self._on_window_shown
 
     # Injection de code JS pour désactiver le menu contextuel
     def disable_context_menu_and_cursor(self):
@@ -193,6 +258,69 @@ class WebViewClient:
         self._token_refresh_thread = threading.Thread(target=_loop, daemon=True)
         self._token_refresh_thread.start()
 
+    def start_initialization(self):
+        """Boucle d'initialisation persistante (gère le démarrage hors ligne).
+
+        Réessaie l'obtention du token avec un backoff exponentiel borné. Dès
+        que le token est obtenu, initialise l'imprimante, démarre le
+        renouvellement périodique et bascule la borne en mode opérationnel — ce
+        qui déclenche le chargement de /patient à la place de l'écran « Borne
+        hors ligne ». Tourne dans un thread démon pour ne pas bloquer
+        l'ouverture de la fenêtre.
+        """
+        def _supervise():
+            delay = INIT_BACKOFF_START
+            while not self._init_stop.is_set():
+                try:
+                    # Une seule tentative par itération : le backoff est géré
+                    # ici, get_app_token n'ajoute donc pas sa propre attente.
+                    self.get_app_token(max_retries=1)
+                    self.initialize_printer()
+                    self.start_token_refresh()
+                    self.connected = True
+                    self._set_operational(True)
+                    print("Borne opérationnelle")
+                    return
+                except Exception as e:
+                    self.connected = False
+                    print(f"Initialisation impossible, nouvel essai dans {delay}s : {e}")
+                    # Attente interruptible : réveil immédiat à la fermeture.
+                    if self._init_stop.wait(delay):
+                        return
+                    delay = min(delay * 2, INIT_BACKOFF_MAX)
+
+        self._init_thread = threading.Thread(target=_supervise, daemon=True)
+        self._init_thread.start()
+
+    def is_operational(self):
+        with self._operational_lock:
+            return self.operational
+
+    def _set_operational(self, value):
+        with self._operational_lock:
+            self.operational = value
+        if value:
+            self._maybe_show_patient_page()
+
+    def _maybe_show_patient_page(self):
+        """Charge /patient dès que la borne est opérationnelle ET la fenêtre
+        prête. Appelé à la fois par la boucle d'init et par l'évènement
+        d'affichage de la fenêtre (l'ordre des deux n'est pas garanti). Le
+        contrôle-et-marquage est atomique pour éviter un double chargement
+        quand les deux threads arrivent en même temps."""
+        with self._operational_lock:
+            if self._patient_page_shown or not self.operational:
+                return
+            if not (self._window_ready.is_set() and self.window):
+                return
+            self._patient_page_shown = True
+        try:
+            self.window.load_url(f"{self.base_url}/patient")
+        except Exception as e:
+            with self._operational_lock:
+                self._patient_page_shown = False
+            print(f"Erreur lors du chargement de /patient : {e}")
+
     def initialize_printer(self):
         """Initialise l'imprimante une fois le token obtenu"""
         if self.app_token:
@@ -209,10 +337,24 @@ class WebViewClient:
             raise Exception("Tentative d'initialisation de l'imprimante sans token")
 
 
+    def _on_window_shown(self):
+        """La fenêtre est affichée (boucle GUI démarrée) : on marque la fenêtre
+        prête et on charge /patient si la borne est déjà opérationnelle."""
+        self._window_ready.set()
+        self._maybe_show_patient_page()
+
     def on_loaded(self):
         """Gestionnaire d'événement pour le chargement de la page"""
         current_url = self.window.get_current_url()
         print("Page loaded:", current_url)
+
+        # L'écran local « Borne hors ligne » (chargé via html=) gère lui-même sa
+        # présentation ; les injections kiosque ne concernent que les pages
+        # servies par le serveur. On les saute donc tant qu'on n'est pas sur une
+        # URL du serveur, ce qui évite aussi de consommer prématurément le
+        # verrou _protection_injected.
+        if not (current_url or '').startswith(self.base_url):
+            return
 
         if not self._protection_injected:
             self.inject_kiosk_protection()
@@ -357,6 +499,7 @@ class WebViewClient:
             self.create_window()
             webview.start(debug=Config().settings.debug)
         finally:
+            self._init_stop.set()
             self._token_refresh_stop.set()
             if self.printer:
                 self.printer.cleanup()

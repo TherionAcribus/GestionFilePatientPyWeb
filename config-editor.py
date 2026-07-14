@@ -2,11 +2,18 @@
 import logging
 import threading
 import tkinter as tk
+from dataclasses import fields
 from tkinter import ttk, messagebox
 import logging_config
+import editor_logic
 from config import Config, Settings
 
 logger = logging.getLogger("borne.editor")
+
+# Couleurs des messages de mise en évidence (mode debug, identifiants par
+# défaut) : orange = avertissement, rouge = refus à l'enregistrement.
+_WARN_COLOR = "#b35900"
+_DANGER_COLOR = "#b00020"
 
 # Timeout (connexion, lecture) du test de joignabilité du serveur.
 _TEST_TIMEOUT = (5, 10)
@@ -23,9 +30,17 @@ class ConfigEditor(tk.Tk):
         self.geometry("600x800")
         self.resizable(True, True)
 
+        # Instantané des valeurs chargées, pour détecter les modifications non
+        # enregistrées (avertissement avant fermeture).
+        self._loaded_values = {}
+
         # Création du formulaire
         self.create_widgets()
         self.load_config()
+
+        # Avertir avant de fermer la fenêtre si des changements ne sont pas
+        # enregistrés (croix de la fenêtre + bouton « Annuler »).
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def create_widgets(self):
         # Frame principal avec scrollbar
@@ -57,6 +72,9 @@ class ConfigEditor(tk.Tk):
             ("Serveur", [
                 ("base_url", "URL racine:", str),
             ]),
+            ("Borne", [
+                ("borne_id", "Identifiant de la borne:", str),
+            ]),
             ("Fenêtre", [
                 ("fullscreen", "Plein écran:", bool),
                 ("debug", "Mode debug:", bool),
@@ -77,6 +95,29 @@ class ConfigEditor(tk.Tk):
 
         # Création des sections
         row = 0
+
+        # Bandeau : toute la configuration de la borne est lue au démarrage et
+        # n'est jamais rechargée à chaud. Les modifications enregistrées ici ne
+        # prennent donc effet qu'après un redémarrage de l'application borne.
+        tk.Label(
+            scrollable_frame,
+            text=("ℹ Les modifications ne prennent effet qu'après redémarrage "
+                  "de la borne (aucun rechargement à chaud)."),
+            fg="#0b5394", wraplength=540, justify="left",
+        ).grid(row=row, column=0, columnspan=3, padx=5, pady=(0, 8), sticky="w")
+        row += 1
+
+        # Mise en évidence dynamique du mode debug et des identifiants par
+        # défaut (mis à jour à chaque modification des champs concernés). Masqué
+        # tant qu'il n'y a rien à signaler.
+        self._security_label = tk.Label(
+            scrollable_frame, text="", fg=_WARN_COLOR, wraplength=540,
+            justify="left", font=('Helvetica', 9, 'bold'))
+        self._security_label.grid(row=row, column=0, columnspan=3, padx=5,
+                                  pady=(0, 8), sticky="w")
+        self._security_label.grid_remove()
+        row += 1
+
         for section_title, section_fields in fields:
             # Titre de section
             ttk.Label(scrollable_frame, text=section_title, font=('Helvetica', 10, 'bold')).grid(
@@ -112,6 +153,12 @@ class ConfigEditor(tk.Tk):
 
                 row += 1
 
+        # Met en évidence le mode debug et les identifiants par défaut dès que
+        # l'un des champs concernés change (et une première fois au chargement).
+        for name in ("debug", "username", "password", "app_secret"):
+            self.variables[name].trace_add(
+                "write", lambda *a: self._refresh_security_highlights())
+
         # Boutons
         button_frame = ttk.Frame(scrollable_frame)
         button_frame.grid(row=row, column=0, columnspan=3, pady=20)
@@ -124,31 +171,104 @@ class ConfigEditor(tk.Tk):
         self._printer_button = ttk.Button(button_frame, text="Tester l'imprimante",
                                            command=self.test_printer)
         self._printer_button.pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Restaurer les valeurs par défaut",
+                   command=self.restore_defaults).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Enregistrer", command=self.save_config).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Annuler", command=self.quit).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Annuler", command=self._on_close).pack(side=tk.LEFT)
 
         # Pack final
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
     def load_config(self):
-        """Charge la configuration dans les champs"""
+        """Charge la configuration dans les champs et mémorise l'état de départ
+        (pour détecter les modifications non enregistrées)."""
         for field_name, var in self.variables.items():
             value = getattr(self.config.settings, field_name)
             var.set(value)
+        self._loaded_values = self._current_form_values()
+        self._refresh_security_highlights()
+
+    def _current_form_values(self) -> dict:
+        """Valeurs courantes du formulaire (par nom de champ)."""
+        return {name: var.get() for name, var in self.variables.items()}
+
+    def _is_dirty(self) -> bool:
+        """Vrai si le formulaire diffère de l'état chargé/enregistré."""
+        return editor_logic.values_differ(self._loaded_values,
+                                          self._current_form_values())
 
     def _settings_from_form(self):
         """Construit un objet Settings à partir des champs SAISIS (sans
-        sauvegarder). Les champs absents du formulaire (ex. borne_id) gardent
-        leur valeur courante."""
-        new_values = {}
-        for field_name, var in self.variables.items():
-            new_values[field_name] = var.get()
-        # Conserve les réglages non exposés dans l'éditeur.
+        sauvegarder). Tout champ non exposé dans l'éditeur garde sa valeur
+        courante (robuste à l'ajout futur de champs au dataclass)."""
+        new_values = self._current_form_values()
+        known = {f.name for f in fields(Settings)}
         base = {f: getattr(self.config.settings, f)
-                for f in ("borne_id",) if hasattr(self.config.settings, f)}
+                for f in known if f not in new_values
+                and hasattr(self.config.settings, f)}
         base.update(new_values)
         return Settings(**base)
+
+    # ------------------------------------------------------------------
+    # Mise en évidence / fermeture / restauration
+    # ------------------------------------------------------------------
+    def _refresh_security_highlights(self):
+        """Affiche/masque le bandeau mettant en évidence le mode debug et les
+        identifiants par défaut, en fonction de la saisie courante."""
+        # Le label n'existe pas encore pendant la construction initiale.
+        if not hasattr(self, "_security_label"):
+            return
+        try:
+            settings = self._settings_from_form()
+        except Exception:
+            return
+
+        msgs = []
+        color = _WARN_COLOR
+        if settings.debug:
+            msgs.append("Mode debug ACTIVÉ (développement) — à désactiver "
+                        "avant un déploiement en production.")
+        cred_warning = editor_logic.default_credentials_warning(settings)
+        if cred_warning:
+            msgs.append(cred_warning)
+            if settings.is_production:
+                # Refus à l'enregistrement : signalé en rouge.
+                color = _DANGER_COLOR
+
+        if msgs:
+            self._security_label.config(text="⚠ " + "\n⚠ ".join(msgs), fg=color)
+            self._security_label.grid()
+        else:
+            self._security_label.config(text="")
+            self._security_label.grid_remove()
+
+    def restore_defaults(self):
+        """Remplit le formulaire avec les valeurs par défaut (après
+        confirmation). N'enregistre rien : l'utilisateur doit toujours cliquer
+        sur « Enregistrer » pour appliquer."""
+        if not messagebox.askyesno(
+                "Restaurer les valeurs par défaut",
+                "Remplacer tous les champs par les valeurs par défaut ?\n\n"
+                "Les modifications non enregistrées seront perdues. "
+                "L'enregistrement reste nécessaire pour appliquer les "
+                "changements."):
+            return
+        defaults = Settings()
+        for name, var in self.variables.items():
+            var.set(getattr(defaults, name))
+        self._refresh_security_highlights()
+
+    def _on_close(self):
+        """Ferme la fenêtre en prévenant si des modifications ne sont pas
+        enregistrées."""
+        if self._is_dirty():
+            if not messagebox.askyesno(
+                    "Modifications non enregistrées",
+                    "Des modifications n'ont pas été enregistrées.\n\n"
+                    "Quitter sans enregistrer ?"):
+                return
+        self.destroy()
 
     def save_config(self):
         """Valide puis sauvegarde la configuration.
@@ -170,6 +290,14 @@ class ConfigEditor(tk.Tk):
                 + "\n- ".join(errors))
             return
 
+        # Garde-fou sécurité : refuse les identifiants/secret par défaut
+        # (admin/admin) hors mode développement explicitement activé (case
+        # « Mode debug »), en cohérence avec le refus de démarrage (main.py).
+        cred_error = editor_logic.default_credentials_error(settings)
+        if cred_error:
+            messagebox.showerror("Identifiants par défaut refusés", cred_error)
+            return
+
         try:
             # save_settings applique la nouvelle configuration de façon atomique
             # et restaure l'ancienne en mémoire si l'écriture échoue (point 10).
@@ -178,11 +306,13 @@ class ConfigEditor(tk.Tk):
             messagebox.showerror("Erreur", f"Erreur lors de la sauvegarde : {e}")
             return
 
+        # État enregistré : plus rien à signaler comme « non enregistré ».
+        self._loaded_values = self._current_form_values()
         messagebox.showinfo(
             "Succès",
             "Configuration enregistrée avec succès.\nRedémarrez l'application principale pour appliquer les changements."
         )
-        self.quit()
+        self.destroy()
 
     # ------------------------------------------------------------------
     # Tests de diagnostic

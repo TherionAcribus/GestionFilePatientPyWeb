@@ -8,6 +8,8 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import platform
 
+import secret_store
+
 logger = logging.getLogger("borne.config")
 
 # Secret d'application par défaut (livré dans l'exemple) : à refuser en
@@ -246,6 +248,10 @@ class Config:
             # Premier démarrage : on écrit les valeurs par défaut. Un échec
             # d'écriture n'est pas fatal (on garde les défauts en mémoire).
             self.settings = Settings()
+            # Si un magasin sécurisé contient déjà des secrets (fichier supprimé
+            # mais keyring conservé), on les reprend au lieu d'écraser avec les
+            # valeurs par défaut.
+            self._apply_secret_store({})
             try:
                 self.save_settings()
             except Exception as e:
@@ -267,6 +273,15 @@ class Config:
                                ', '.join(sorted(ignored)))
             filtered = {k: v for k, v in data.items() if k in known}
             self.settings = Settings(**filtered)
+            # Les secrets (password, app_secret) proviennent désormais du
+            # magasin sécurisé du système ; on migre au besoin une valeur
+            # héritée en clair puis on réécrit le fichier sans elle.
+            if self._apply_secret_store(data):
+                try:
+                    self.save_settings()
+                except Exception as e:
+                    logger.error(
+                        "Réécriture après migration des secrets impossible: %s", e)
         except Exception as e:
             # Config illisible : on NE bascule PAS en douce sur les défauts. On
             # signale l'erreur (main.py refusera de démarrer) tout en gardant un
@@ -275,17 +290,74 @@ class Config:
             self.load_error = f"Fichier de configuration illisible : {e}"
             self.settings = Settings()
 
+    def _apply_secret_store(self, raw_data) -> bool:
+        """Renseigne les secrets de ``self.settings`` depuis le magasin sécurisé.
+
+        - Si une valeur est présente dans le magasin, elle prime.
+        - Sinon, une valeur héritée en clair dans ``raw_data`` (fichier JSON) est
+          migrée vers le magasin lorsque c'est possible.
+
+        Renvoie ``True`` si une migration a eu lieu (le fichier doit alors être
+        réécrit pour effacer la copie en clair). Ne journalise jamais de valeur."""
+        migrated = False
+        raw = raw_data if isinstance(raw_data, dict) else {}
+        for name in secret_store.SECRET_FIELDS:
+            stored = secret_store.get_secret(name)
+            if stored:
+                setattr(self.settings, name, stored)
+                continue
+            legacy = raw.get(name) or ""
+            if legacy:
+                if secret_store.set_secret(name, legacy):
+                    migrated = True
+                    logger.info(
+                        "Secret « %s » migré du fichier vers le magasin sécurisé.",
+                        name)
+                # Valeur conservée en mémoire pour la session en cours, que la
+                # migration ait réussi ou non.
+                setattr(self.settings, name, legacy)
+        return migrated
+
     def save_settings(self):
         """Sauvegarde les paramètres dans le fichier JSON.
+
+        Les secrets (``password``, ``app_secret``) ne sont **jamais** écrits en
+        clair : ils sont déplacés vers le magasin de secrets du système. On ne
+        retombe PAS silencieusement sur un stockage en clair (point 5) :
+        - magasin disponible  -> secrets dans le magasin, champs vidés du JSON ;
+        - indisponible, **production** -> ``SecretStoreUnavailableError`` (refus) ;
+        - indisponible, **développement** -> repli en clair mais AVERTISSEMENT.
 
         Les erreurs d'écriture NE sont PLUS avalées : elles se propagent à
         l'appelant (éditeur de configuration) pour être remontées à l'interface
         au lieu d'afficher un faux « succès »."""
         config_file = self.config_path / "settings.json"
 
+        data = asdict(self.settings)
+
+        secret_values = {k: data.get(k, "") for k in secret_store.SECRET_FIELDS}
+        if secret_store.store_secrets(secret_values):
+            # Stockés de façon sécurisée : ne rien laisser en clair dans le JSON.
+            for k in secret_store.SECRET_FIELDS:
+                data[k] = ""
+        elif self.settings.is_production:
+            # Production : refuser catégoriquement l'écriture en clair.
+            raise secret_store.SecretStoreUnavailableError(
+                "Le gestionnaire de secrets du système est indisponible : les "
+                "secrets ne peuvent pas être enregistrés de façon sécurisée et "
+                "l'écriture en clair est refusée en production. Activez un "
+                "magasin de secrets (Gestionnaire d'identifiants Windows, "
+                "Trousseau, Secret Service) puis réessayez.")
+        else:
+            # Développement : repli en clair TOLÉRÉ mais jamais silencieux.
+            logger.warning(
+                "Secrets de la borne stockés EN CLAIR dans %s (magasin sécurisé "
+                "indisponible, mode développement).", config_file)
+            # ``data`` conserve les valeurs en clair.
+
         with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(asdict(self.settings), f, indent=4)
-        # Le fichier contient mot de passe + secret d'application : on
+            json.dump(data, f, indent=4)
+        # Le fichier peut, en repli développement, contenir des secrets : on
         # restreint les permissions au seul propriétaire (lecture/écriture).
         # Sans effet notable sous Windows, déterminant sous Linux (borne).
         # Un échec de chmod n'invalide pas la sauvegarde elle-même.

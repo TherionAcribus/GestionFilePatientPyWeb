@@ -15,3 +15,9 @@ requests==2.32.3
 # Imprimante ticket ESC/POS via USB.
 python-escpos==3.1
 pyusb==1.2.1
+
+# Stockage sécurisé des secrets (mot de passe, secret d'application) dans le
+# gestionnaire d'identifiants du système (Credential Manager / Trousseau /
+# Secret Service). Sans backend fonctionnel, la borne REFUSE d'écrire les
+# secrets en clair en production (cf. secret_store / config.save_settings).
+keyring==25.2.1

@@ -108,8 +108,9 @@ diagnostics :
 | Champ | Type | Description |
 |-------|------|-------------|
 | `base_url` | str | URL racine du serveur. **HTTP autorisé uniquement pour `localhost` ou en mode `debug`** ; un serveur distant doit être en **HTTPS**. |
-| `username` / `password` | str | Identifiants de session de la borne (non vides). |
-| `app_secret` | str | Secret d'application (non vide ; **refusé si valeur par défaut en production**). |
+| `username` | str | Identifiant de session de la borne (non vide). |
+| `password` | str | Mot de passe de session. **Secret** : stocké dans le magasin du système, jamais en clair dans `settings.json` (cf. § 4.3). |
+| `app_secret` | str | Secret d'application (non vide ; **refusé si valeur par défaut en production**). **Secret** : stocké dans le magasin du système (cf. § 4.3). |
 | `printer_id_vendor` | str | ID vendeur USB, hexadécimal (ex. `0x04b8`). |
 | `printer_id_product` | str | ID produit USB, hexadécimal (ex. `0x0202`). |
 | `printer_model` | str | Profil python-escpos (ex. `TM-T88II`). |
@@ -123,6 +124,27 @@ diagnostics :
 > invalide (URL/secret/identifiants USB/types) ou si des identifiants par
 > défaut (`admin/admin`) sont utilisés en production. L'écran d'erreur liste
 > les problèmes.
+
+### 4.3 Stockage des secrets (`password`, `app_secret`)
+
+Ces deux valeurs ne sont **jamais** écrites en clair dans `settings.json` : elles
+sont conservées dans le **gestionnaire de secrets du système** via `keyring`
+(Gestionnaire d'identifiants Windows, Trousseau macOS, Secret Service Linux).
+`settings.example.json` ne les contient donc plus ; renseignez-les via
+`config-editor.py`.
+
+- **Migration automatique** : si un ancien `settings.json` contient encore ces
+  valeurs en clair, elles sont déplacées vers le magasin sécurisé au premier
+  chargement, puis effacées du fichier.
+- **Pas de repli silencieux** : si aucun magasin sécurisé n'est disponible,
+  l'enregistrement est **refusé en production** (mode `debug=false`) avec un
+  message explicite ; en mode développement (`debug=true`), le repli en clair
+  est toléré mais **journalise un avertissement**.
+- **Linux « headless »** : le backend Secret Service nécessite un service de
+  trousseau actif (paquets `secretstorage`/`dbus`). Sur une borne sans session
+  graphique, installez un backend adapté (ex. `keyrings.alt` /
+  `keyrings.cryptfile`) ou effectuez la configuration depuis un poste disposant
+  d'un magasin, sans quoi l'enregistrement des secrets sera refusé en production.
 
 ---
 

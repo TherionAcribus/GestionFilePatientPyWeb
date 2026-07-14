@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass, asdict, fields
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -318,8 +320,15 @@ class Config:
                 setattr(self.settings, name, legacy)
         return migrated
 
-    def save_settings(self):
-        """Sauvegarde les paramètres dans le fichier JSON.
+    def save_settings(self, new_settings=None):
+        """Sauvegarde les paramètres dans le fichier JSON, de façon **atomique**.
+
+        Si ``new_settings`` est fourni, il devient la configuration courante
+        (``self.settings``) le temps de l'écriture. **En cas d'échec d'écriture,
+        l'ancien objet en mémoire est restauré** (point 10) : le fichier sur
+        disque n'ayant pas été remplacé (``os.replace`` n'a pas eu lieu), mémoire
+        et disque restent cohérents. Sans cet argument, on écrit ``self.settings``
+        tel quel (usage interne : premier démarrage, migration des secrets).
 
         Les secrets (``password``, ``app_secret``) ne sont **jamais** écrits en
         clair : ils sont déplacés vers le magasin de secrets du système. On ne
@@ -331,6 +340,28 @@ class Config:
         Les erreurs d'écriture NE sont PLUS avalées : elles se propagent à
         l'appelant (éditeur de configuration) pour être remontées à l'interface
         au lieu d'afficher un faux « succès »."""
+        previous = self.settings
+        if new_settings is not None:
+            self.settings = new_settings
+        try:
+            self._write_settings_file()
+        except Exception:
+            # Écriture atomique échouée : le fichier n'a pas été remplacé. On
+            # restaure l'objet en mémoire précédent pour ne pas laisser la borne
+            # avec une configuration qui n'est pas celle réellement persistée.
+            self.settings = previous
+            raise
+
+    def _write_settings_file(self):
+        """Écrit ``self.settings`` dans ``settings.json`` de manière atomique.
+
+        Procédé (point 10) : sérialisation dans un fichier temporaire situé dans
+        le **même dossier** (donc le même système de fichiers, condition d'un
+        ``os.replace`` atomique), permissions restreintes appliquées **avant** d'y
+        écrire d'éventuels secrets, ``flush`` + ``fsync`` pour forcer l'écriture
+        physique, copie ``.bak`` de l'ancienne version, puis remplacement atomique.
+        Un lecteur ne voit jamais un fichier à moitié écrit : soit l'ancien
+        contenu complet, soit le nouveau."""
         config_file = self.config_path / "settings.json"
 
         data = asdict(self.settings)
@@ -355,12 +386,45 @@ class Config:
                 "indisponible, mode développement).", config_file)
             # ``data`` conserve les valeurs en clair.
 
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=4)
-        # Le fichier peut, en repli développement, contenir des secrets : on
-        # restreint les permissions au seul propriétaire (lecture/écriture).
-        # Sans effet notable sous Windows, déterminant sous Linux (borne).
-        # Un échec de chmod n'invalide pas la sauvegarde elle-même.
+        # Fichier temporaire dans le même dossier. ``mkstemp`` le crée d'emblée
+        # en 0600 (lisible/inscriptible par le seul propriétaire) : les
+        # permissions restrictives sont donc en place AVANT toute écriture de
+        # secret. Déterminant sous Linux (borne), sans effet notable sous Windows.
+        fd, tmp_name = tempfile.mkstemp(
+            prefix="settings-", suffix=".tmp", dir=str(self.config_path))
+        tmp_path = Path(tmp_name)
+        try:
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError as e:
+                logger.warning(
+                    "Impossible de restreindre les permissions de %s: %s",
+                    tmp_path, e)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            # Copie de sécurité de l'ancienne version avant remplacement. Un
+            # échec de cette copie n'empêche pas la sauvegarde elle-même.
+            if config_file.exists():
+                try:
+                    shutil.copy2(config_file, config_file.parent / (config_file.name + ".bak"))
+                except OSError as e:
+                    logger.warning("Copie de sauvegarde .bak impossible: %s", e)
+            # Remplacement atomique : os.replace est atomique sur le même système
+            # de fichiers (POSIX et Windows).
+            os.replace(tmp_path, config_file)
+        except Exception:
+            # Le remplacement n'a pas eu lieu : supprimer le fichier temporaire
+            # pour ne pas laisser de résidu.
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            raise
+        # Confirme les permissions finales (redondant après mkstemp+replace,
+        # mais sans risque). Un échec de chmod n'invalide pas la sauvegarde.
         try:
             os.chmod(config_file, 0o600)
         except OSError as e:

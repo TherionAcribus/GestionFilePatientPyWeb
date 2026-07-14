@@ -171,8 +171,9 @@ class ConfigEditor(tk.Tk):
             return
 
         try:
-            self.config.settings = settings
-            self.config.save_settings()
+            # save_settings applique la nouvelle configuration de façon atomique
+            # et restaure l'ancienne en mémoire si l'écriture échoue (point 10).
+            self.config.save_settings(settings)
         except Exception as e:
             messagebox.showerror("Erreur", f"Erreur lors de la sauvegarde : {e}")
             return

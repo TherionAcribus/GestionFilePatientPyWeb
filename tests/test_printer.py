@@ -17,13 +17,12 @@ import pytest
 
 import printer as printer_module
 from printer import (
+    MAX_ENCODED_LEN,
+    MAX_TICKET_CHARS,
+    MAX_TICKET_LINES,
     Printer,
     PrinterAPI,
     decode_and_validate_print_payload,
-    MAX_ENCODED_LEN,
-    MAX_DECODED_BYTES,
-    MAX_TICKET_CHARS,
-    MAX_TICKET_LINES,
 )
 
 
@@ -99,7 +98,7 @@ def make_printer(device=None, error=False, check_paper=False, monkeypatch=None,
     return p
 
 
-VALID_PAYLOAD = base64.b64encode("Bonjour".encode('utf-8')).decode('ascii')
+VALID_PAYLOAD = base64.b64encode(b"Bonjour").decode('ascii')
 
 
 # --- Tests Printer.print ---------------------------------------------------
@@ -189,7 +188,7 @@ def test_print_always_returns_dict_contract(monkeypatch):
     device = FakeDevice()
     p = make_printer(device=device, check_paper=False, monkeypatch=monkeypatch)
     result = p.print(VALID_PAYLOAD)
-    assert set(['success', 'code', 'message']).issubset(result.keys())
+    assert {'success', 'code', 'message'}.issubset(result.keys())
     assert isinstance(result['success'], bool)
 
 
@@ -312,7 +311,7 @@ def test_payload_error_never_leaks_content():
     secret = "SECRET-TOKEN-12345\x07"
     try:
         decode_and_validate_print_payload(_b64(secret))
-        assert False, "aurait dû être refusé"
+        raise AssertionError('aurait dû être refusé')
     except ValueError as e:
         assert "SECRET-TOKEN" not in str(e)
 

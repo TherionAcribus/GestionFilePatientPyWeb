@@ -20,6 +20,7 @@ Utilisation :
 Convention des noms de logger : ``borne.main``, ``borne.printer``,
 ``borne.config``, ``borne.status``, ``borne.editor``.
 """
+import contextlib
 import logging
 import logging.handlers
 import os
@@ -27,6 +28,7 @@ import platform
 import re
 import threading
 from pathlib import Path
+from typing import ClassVar
 
 APP_NAME = "FileAttente"  # cohérent avec config.Config.app_name
 LOG_FILENAME = "borne.log"
@@ -84,7 +86,7 @@ class RedactingFilter(logging.Filter):
     - motifs génériques (clé=valeur) pour les cas non anticipés.
     """
 
-    _PATTERNS = [
+    _PATTERNS: ClassVar[list] = [
         re.compile(r"(x-app-token['\"\s:=]+)\S+", re.IGNORECASE),
         re.compile(r"(app[_-]?secret['\"\s:=]+)\S+", re.IGNORECASE),
         re.compile(r"(password['\"\s:=]+)\S+", re.IGNORECASE),
@@ -172,10 +174,8 @@ def setup_logging(level=logging.INFO, log_dir=None, console=True):
         try:
             log_directory.mkdir(parents=True, exist_ok=True)
             # Restreint l'accès au répertoire de logs (déterminant sous Linux).
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(log_directory, 0o700)
-            except OSError:
-                pass
             file_handler = logging.handlers.RotatingFileHandler(
                 log_directory / LOG_FILENAME,
                 maxBytes=_MAX_BYTES,

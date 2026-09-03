@@ -1,19 +1,43 @@
 # Configuration ruff (lint) de la borne.
 #
-# On sélectionne d'abord le socle d'erreurs CRITIQUES (toujours de vrais bugs) :
-#   E9  : erreurs de syntaxe / d'indentation
-#   F63 : tests/comparaisons douteux (ex. `is` sur un littéral)
-#   F7  : constructions invalides (break/continue hors boucle, etc.)
-#   F82 : noms indéfinis (variable/référence non définie)
-# Ce socle passe sur le code existant sans exiger un grand nettoyage de style,
-# tout en bloquant les erreurs réelles. Élargir ensuite progressivement
-# (ex. "F" pour les imports/variables inutilisés, "I" pour le tri des imports).
+# Le socle historique ne sélectionnait que E9/F63/F7/F82 : quasiment aucune
+# règle ne s'appliquait, la CI ne pouvait donc rien attraper d'autre qu'une
+# erreur de syntaxe. Le périmètre ci-dessous est celui qui tient sur ce code,
+# à zéro violation, et attrape de vrais défauts :
+#
+#   E, W  : erreurs et avertissements pycodestyle (dont E9, syntaxe)
+#   F     : pyflakes — imports/variables inutilisés, noms indéfinis (F63/F7/F82)
+#   I     : tri et regroupement des imports
+#   B     : bugbear — pièges courants (dont B904, chaînage des exceptions)
+#   C4    : compréhensions inutilement coûteuses
+#   SIM   : simplifications évidentes
+#   UP    : constructions obsolètes vis-à-vis de la version Python ciblée
+#   RUF   : règles propres à ruff
+#   LOG/G : mauvais usages du module logging (dont f-strings dans les messages)
+#   DTZ   : datetime sans fuseau (les statuts imprimante sont horodatés en UTC)
+#   RET   : retours de fonction inutilement alambiqués
+#   PIE   : redondances diverses
+#   TRY400/TRY401 : logger.error au lieu de logger.exception dans un except,
+#           et trace redondante dans le message
+#
+# Non retenu volontairement : S (bandit tourne déjà en CI), PTH (réécriture
+# os.path -> pathlib sans gain ici), COM/PLR (bruit de style), TRY003 (messages
+# d'exception explicites, assumés).
 target-version = "py311"
 line-length = 100
 
 [lint]
-select = ["E9", "F63", "F7", "F82"]
+select = ["E", "W", "F", "I", "B", "C4", "SIM", "UP", "RUF", "LOG", "G", "DTZ",
+          "RET", "PIE", "TRY400", "TRY401"]
+ignore = [
+    # Le code et les commentaires sont en français : guillemets « », apostrophes
+    # typographiques et accents déclenchent les règles « caractère ambigu ».
+    "RUF001", "RUF002", "RUF003",
+]
 
 [lint.per-file-ignores]
-# Les tests peuvent réimporter/monkeypatcher librement.
-"tests/*" = ["E402", "F811"]
+# Les tests peuvent réimporter/monkeypatcher librement. E402 (import après du
+# code) n'est PAS ignoré globalement ici : chaque test qui insère le dossier
+# parent dans sys.path avant ses imports porte déjà un `# noqa: E402` explicite,
+# ce qui documente l'exception là où elle est faite.
+"tests/*" = ["F811"]

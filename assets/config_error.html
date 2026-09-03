@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!--
+  Écran affiché quand la borne REFUSE de démarrer (configuration invalide ou non
+  sécurisée). La liste des problèmes remplace le marqueur ERROR_ITEMS de la
+  liste ci-dessous ; chaque message est échappé par
+  ui_assets.build_config_error_html() : une valeur de configuration ne peut donc
+  pas injecter de balise ici.
+
+  ATTENTION : ne jamais écrire un marqueur (double blanc soulignés autour du nom)
+  dans ce commentaire — il serait substitué comme les autres.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: #3f0d0d; color: #fee2e2;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    cursor: none; user-select: none;
+  }
+  .wrap {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 2rem;
+  }
+  h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 1rem; }
+  p  { font-size: 1.3rem; margin: 0.3rem 0; color: #fecaca; max-width: 44rem; }
+  ul { text-align: left; font-size: 1.15rem; color: #fecaca; max-width: 44rem;
+       margin: 1rem auto; line-height: 1.5; }
+  li { margin: 0.35rem 0; }
+</style>
+</head>
+<body oncontextmenu="return false">
+  <div class="wrap">
+    <h1>Configuration invalide</h1>
+    <p>La borne refuse de démarrer pour les raisons suivantes :</p>
+    <ul>__ERROR_ITEMS__</ul>
+    <p>Ouvrez l'éditeur de configuration pour corriger ces points.</p>
+  </div>
+</body>
+</html>

@@ -108,9 +108,9 @@ diagnostics :
 | Champ | Type | Description |
 |-------|------|-------------|
 | `base_url` | str | URL racine du serveur. **HTTP autorisé uniquement pour `localhost` ou en mode `debug`** ; un serveur distant doit être en **HTTPS**. |
-| `username` | str | Identifiant de session de la borne (non vide). |
-| `password` | str | Mot de passe de session. **Secret** : stocké dans le magasin du système, jamais en clair dans `settings.json` (cf. § 4.3). |
-| `app_secret` | str | Secret d'application (non vide ; **refusé si valeur par défaut en production**). **Secret** : stocké dans le magasin du système (cf. § 4.3). |
+| `username` | str | Identifiant de session de la borne (non vide ; **vide par défaut**, le code ne livre aucun identifiant). |
+| `password` | str | Mot de passe de session (non vide ; **vide par défaut**). **Secret** : stocké dans le magasin du système, jamais en clair dans `settings.json` (cf. § 4.3). |
+| `app_secret` | str | Secret d'application (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.3). |
 | `printer_id_vendor` | str | ID vendeur USB, hexadécimal (ex. `0x04b8`). |
 | `printer_id_product` | str | ID produit USB, hexadécimal (ex. `0x0202`). |
 | `printer_model` | str | Profil python-escpos (ex. `TM-T88II`). |
@@ -121,9 +121,15 @@ diagnostics :
 | `borne_id` | str | Identifiant de la borne joint aux statuts (vide = nom d'hôte). |
 
 > **Garde-fous** : la borne **refuse de démarrer** si la configuration est
-> invalide (URL/secret/identifiants USB/types) ou si des identifiants par
-> défaut (`admin/admin`) sont utilisés en production. L'écran d'erreur liste
-> les problèmes.
+> invalide (URL/secret/identifiants USB/types) ou si des identifiants triviaux
+> (`admin/admin`, secret d'exemple) sont utilisés en production. L'écran
+> d'erreur liste les problèmes.
+>
+> **Aucun identifiant n'est livré dans le code** : `username`, `password` et
+> `app_secret` naissent **vides**, donc une borne installée sans passer par
+> l'éditeur refuse de démarrer au lieu de tourner avec `admin/admin`. Les
+> valeurs usuelles (`admin`, `password`, secret d'exemple…) restent refusées en
+> production par une denylist, qui couvre les installations existantes.
 
 ### 4.3 Stockage des secrets (`password`, `app_secret`)
 
@@ -233,6 +239,12 @@ pip install -r requirements-dev.txt
   `escpos`/`pyusb`, et le **découplage matériel** de `Printer`
   (`device_factory`) permet d'injecter une **fausse imprimante**.
 - **Lint** : `ruff check .`
+  Le périmètre (voir [`ruff.toml`](ruff.toml)) couvre pycodestyle (`E`/`W`),
+  pyflakes (`F`), le tri des imports (`I`), bugbear (`B`), les simplifications
+  (`SIM`/`C4`/`RET`/`PIE`), la modernisation (`UP`), les règles ruff (`RUF`),
+  les mauvais usages de `logging` (`LOG`/`G`/`TRY400`/`TRY401`) et les dates
+  sans fuseau (`DTZ`). Le dépôt est à **zéro violation** : toute nouvelle
+  alerte est un vrai défaut à corriger.
 - **Sécurité** : `bandit -r . -ll -x ./tests` et `pip-audit -r requirements.txt`
 
 La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
@@ -248,7 +260,12 @@ La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
 | Fichier | Rôle |
 |---------|------|
 | `main.py` | Fenêtre kiosque, cycle de vie, token, protections tactiles. |
+| `ui_assets.py` | Chargement/substitution des écrans et scripts de `assets/`. |
+| `assets/` | Écrans HTML (hors ligne, erreur de configuration) et scripts JS (kiosque, clavier, connexion) — plus aucun bloc HTML/JS dans `main.py`. |
+| `errors.py` | Exceptions métier (`BorneError` et ses filles) : panne attendue vs bogue. |
 | `printer.py` | Logique imprimante (impression, papier, statuts, reconnexion) + découplage matériel. |
 | `config.py` | Chargement/validation/sauvegarde de la configuration. |
 | `config-editor.py` | Éditeur graphique + tests serveur/imprimante. |
 | `logging_config.py` | Journalisation (niveaux, rotation, masquage des secrets). |
+| `editor_logic.py` | Logique pure de l'éditeur (testable sans tkinter). |
+| `secret_store.py` | Stockage des secrets dans le magasin du système (keyring). |

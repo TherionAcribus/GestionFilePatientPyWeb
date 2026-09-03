@@ -18,9 +18,9 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import secret_store  # noqa: E402
-import config as config_mod  # noqa: E402
-from config import Config, DEFAULT_APP_SECRET  # noqa: E402
+import config as config_mod
+import secret_store
+from config import Config
 
 
 @pytest.fixture
@@ -49,16 +49,15 @@ def _read_json(tmp_path):
         return json.load(f)
 
 
-def test_fresh_config_stores_secrets_in_keyring_not_in_file(store):
+def test_fresh_config_has_no_credentials_and_writes_nothing_in_clear(store):
     tmp_path = store["_path"]
     cfg = Config()
-    # Les valeurs par défaut sont bien en mémoire...
-    assert cfg.settings.password == "admin"
-    assert cfg.settings.app_secret == DEFAULT_APP_SECRET
-    # ...déposées dans le magasin sécurisé...
-    assert store["password"] == "admin"
-    assert store["app_secret"] == DEFAULT_APP_SECRET
-    # ...et JAMAIS en clair dans le fichier.
+    # Le code ne fournit AUCUN identifiant : une borne neuve naît sans secrets
+    # (elle refusera de démarrer tant qu'ils ne sont pas configurés).
+    assert cfg.settings.username == ""
+    assert cfg.settings.password == ""
+    assert cfg.settings.app_secret == ""
+    # ...et le fichier ne contient évidemment rien en clair.
     data = _read_json(tmp_path)
     assert data["password"] == ""
     assert data["app_secret"] == ""

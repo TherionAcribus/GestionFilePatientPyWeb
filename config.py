@@ -2,21 +2,36 @@
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass, asdict, fields
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
-import platform
 
 import secret_store
 
 logger = logging.getLogger("borne.config")
 
-# Secret d'application par défaut (livré dans l'exemple) : à refuser en
-# production, cf. has_insecure_default_credentials / main.py.
-DEFAULT_APP_SECRET = "votre_secret_app"
+# --- Identifiants : AUCUNE valeur par défaut dans le code -------------------
+# Le code source ne fournit plus d'identifiants ni de secret utilisables : les
+# champs ``username``, ``password`` et ``app_secret`` naissent VIDES. Une borne
+# non configurée refuse donc de démarrer (``validate()`` signale les champs
+# vides) au lieu de tourner avec des accès triviaux hérités du dépôt.
+#
+# Les listes ci-dessous ne sont PAS des valeurs par défaut : ce sont des
+# DENYLISTS servant à refuser une borne encore configurée avec les valeurs
+# d'exemple historiques (installations existantes, tutoriels, copies de
+# settings.json). Elles ne contiennent que des valeurs publiquement connues,
+# donc sans valeur de secret.
+INSECURE_USERNAMES = frozenset({"", "admin", "administrateur", "administrator",
+                                "root", "user", "borne", "test"})
+INSECURE_PASSWORDS = frozenset({"", "admin", "administrateur", "password",
+                                "motdepasse", "borne", "test", "changeme",
+                                "123456", "1234"})
+INSECURE_APP_SECRETS = frozenset({"", "votre_secret_app", "changeme",
+                                  "secret", "your_app_secret"})
 
 # Hôtes considérés comme « locaux » : seuls ceux-ci (ou le mode développement)
 # autorisent le HTTP en clair. Tout le reste doit passer en HTTPS.
@@ -48,12 +63,15 @@ class Settings:
     # maintenance à la souris. Même à True, le curseur réapparaît dès qu'une
     # souris est utilisée et se remasque au toucher suivant (cf. main.py).
     hide_cursor: bool = True
-    username: str = "admin"
-    password: str = "admin"
+    # Identifiants de la borne : VIDES par défaut (aucun identifiant livré dans
+    # le code). À renseigner via config-editor.py ; la validation refuse le
+    # démarrage tant qu'ils ne le sont pas.
+    username: str = ""
+    password: str = ""
     printer_id_vendor: str = "0x04b8"
     printer_id_product: str = "0x0202"
     printer_model: str = "TM-T88II"
-    app_secret: str = DEFAULT_APP_SECRET
+    app_secret: str = ""
     check_paper: bool = True
     # Identifiant de la borne joint aux statuts imprimante. Vide => le hostname
     # de la machine est utilisé par défaut (voir Printer.__init__).
@@ -68,14 +86,39 @@ class Settings:
         """Production = mode debug désactivé."""
         return not self.debug
 
+    def insecure_credentials_reasons(self) -> list:
+        """Liste des identifiants triviaux détectés (vide = rien à signaler).
+
+        Compare la configuration aux DENYLISTS de valeurs publiquement connues
+        (valeurs d'exemple, mots de passe usuels) plutôt qu'aux « valeurs par
+        défaut du code », qui n'existent plus. La comparaison est insensible à
+        la casse et aux espaces de bordure : « Admin » ou « admin » sont aussi
+        triviaux l'un que l'autre."""
+        def _norm(value):
+            # Les valeurs de mauvais type sont signalées par validate() ; ici on
+            # les ramène à la chaîne vide (elle-même dans les denylists).
+            return value.strip().lower() if isinstance(value, str) else ""
+
+        reasons = []
+        username = _norm(self.username)
+        password = _norm(self.password)
+        app_secret = _norm(self.app_secret)
+
+        if username in INSECURE_USERNAMES and password in INSECURE_PASSWORDS:
+            reasons.append(
+                "Identifiants de session triviaux (nom d'utilisateur et mot de "
+                "passe usuels du type admin/admin).")
+        if app_secret in INSECURE_APP_SECRETS:
+            reasons.append(
+                "Secret d'application vide ou repris de l'exemple de "
+                "configuration.")
+        return reasons
+
     def has_insecure_default_credentials(self) -> bool:
-        """Vrai si des identifiants par défaut (admin/admin) ou le secret
-        d'application par défaut sont encore en place. À refuser en production
-        (cf. main.py) pour ne pas exposer une borne avec des accès triviaux."""
-        return (
-            (self.username == "admin" and self.password == "admin")
-            or self.app_secret in ("", DEFAULT_APP_SECRET)
-        )
+        """Vrai si des identifiants triviaux (admin/admin, secret d'exemple) sont
+        encore en place. À refuser en production (cf. main.py) pour ne pas
+        exposer une borne avec des accès triviaux."""
+        return bool(self.insecure_credentials_reasons())
 
     # ------------------------------------------------------------------
     # Validation / normalisation
@@ -112,14 +155,16 @@ class Settings:
             return ["L'URL du serveur ne peut pas être vide."]
         try:
             parsed = urlparse(raw)
-        except Exception:
+        except ValueError:
             return [f"L'URL du serveur est invalide : {self.base_url!r}."]
         if parsed.scheme not in ("http", "https"):
             return ["L'URL du serveur doit commencer par http:// ou https://."]
         if not parsed.hostname:
             return ["L'URL du serveur ne contient pas de nom d'hôte valide."]
         try:
-            parsed.port  # lève ValueError si le port n'est pas numérique
+            # L'ACCÈS à .port déclenche l'analyse du port : c'est lui qui lève
+            # ValueError si la valeur n'est pas numérique.
+            _ = parsed.port
         except ValueError:
             return ["Le port indiqué dans l'URL du serveur est invalide."]
         if parsed.scheme == "http" and not (
@@ -199,7 +244,7 @@ class Config:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
             cls._instance._initialize()
         return cls._instance
 
@@ -256,12 +301,14 @@ class Config:
             self._apply_secret_store({})
             try:
                 self.save_settings()
-            except Exception as e:
-                logger.error("Impossible d'écrire la configuration par défaut: %s", e)
+            except Exception:
+                # Non fatal : les valeurs par défaut restent en mémoire. Trace
+                # complète, c'est le seul indice si le poste refuse l'écriture.
+                logger.exception("Impossible d'écrire la configuration par défaut.")
             return
 
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, encoding='utf-8') as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("le contenu n'est pas un objet JSON")
@@ -281,14 +328,14 @@ class Config:
             if self._apply_secret_store(data):
                 try:
                     self.save_settings()
-                except Exception as e:
-                    logger.error(
-                        "Réécriture après migration des secrets impossible: %s", e)
+                except Exception:
+                    logger.exception(
+                        "Réécriture après migration des secrets impossible.")
         except Exception as e:
             # Config illisible : on NE bascule PAS en douce sur les défauts. On
             # signale l'erreur (main.py refusera de démarrer) tout en gardant un
             # objet utilisable.
-            logger.error("Erreur lors du chargement des paramètres: %s", e)
+            logger.exception("Erreur lors du chargement des paramètres.")
             self.load_error = f"Fichier de configuration illisible : {e}"
             self.settings = Settings()
 

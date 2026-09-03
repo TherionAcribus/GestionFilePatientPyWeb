@@ -20,9 +20,9 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import secret_store  # noqa: E402
-import config as config_mod  # noqa: E402
-from config import Config, Settings  # noqa: E402
+import config as config_mod
+import secret_store
+from config import Config, Settings
 
 
 @pytest.fixture
@@ -45,9 +45,9 @@ def _read_json(tmp_path):
 
 
 def _new_settings(**overrides):
-    base = dict(base_url="http://127.0.0.1:5000", debug=True, username="borne1",
-                printer_id_vendor="0x04b8", printer_id_product="0x0202",
-                printer_model="TM-T88II")
+    base = {"base_url": "http://127.0.0.1:5000", "debug": True, "username": "borne1",
+                "printer_id_vendor": "0x04b8", "printer_id_product": "0x0202",
+                "printer_model": "TM-T88II"}
     base.update(overrides)
     return Settings(**base)
 

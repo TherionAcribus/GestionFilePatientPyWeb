@@ -1,19 +1,24 @@
-from escpos.printer import Usb
-from escpos.exceptions import USBNotFoundError
-from escpos.constants import RT_STATUS_PAPER
 import base64
+import contextlib
 import logging
-import threading
-import requests
 import queue
-import time
 import random
 import socket
+import threading
+import time
 import uuid
-from datetime import datetime, timezone
-import usb.core  # pyusb : dépendance de python-escpos, fournit USBError
-from config import Config
 from array import array
+from datetime import UTC, datetime
+
+import requests
+import usb.core  # pyusb : dépendance de python-escpos, fournit USBError
+from escpos.constants import RT_STATUS_PAPER
+from escpos.exceptions import USBNotFoundError
+from escpos.printer import Usb
+from requests.exceptions import RequestException
+
+from config import Config
+from errors import PrinterNotReadyError, PrintPayloadError  # noqa: F401 (réexport)
 
 logger = logging.getLogger("borne.printer")
 status_logger = logging.getLogger("borne.status")
@@ -22,16 +27,21 @@ status_logger = logging.getLogger("borne.status")
 class CustomUsb(Usb):
     def query_status(self, mode):
         """
-        Surcharge de escpos.printer.Usb.query_status
-        Version modifiée de query_status qui considère un tableau vide comme absence de papier
-        Le problème est qu'à l'init de l'imprimante les status sont bien renvoyés, 
-        mais en cours d'utilisation s'il n'y a plus de papier, le status renvoyé est vide. Or la lib escpos considère que cela correspond à la présence de papier.
-        En fait, si status vide, c'est que impression occupée potentiellement parce qu'elle essaye d'imprimer sans papier.
+        Surcharge de escpos.printer.Usb.query_status : un tableau vide est
+        considéré comme une ABSENCE de papier.
+
+        À l'initialisation, l'imprimante renvoie bien ses statuts ; mais en cours
+        d'utilisation, s'il n'y a plus de papier, le statut renvoyé est VIDE — et
+        python-escpos interprète alors ce vide comme « papier présent ». En
+        pratique, un statut vide signifie que l'imprimante est occupée,
+        potentiellement parce qu'elle tente d'imprimer sans papier.
         """
         self._raw(mode)
-        time.sleep(0.1)  # Petit délai pour éviter laisser le temps à l'imprimante de répondre (mais bloque le process). Modif si besoin
+        # Laisse à l'imprimante le temps de répondre (bloque le thread appelant ;
+        # à ajuster si besoin).
+        time.sleep(0.1)
         status = self._read()
-        
+
         # Si le tableau est vide et qu'on vérifie le status papier
         if len(status) == 0 and mode == RT_STATUS_PAPER:
             # On retourne [126] qui correspond à l'absence de papier
@@ -68,10 +78,15 @@ class PrinterAPI:
             try:
                 return self._print_callback(print_data)
             except Exception as e:
+                # FRONTIÈRE (pont JavaScript) : la page kiosque attend TOUJOURS
+                # un dictionnaire. Une exception qui remonterait jusqu'à
+                # pywebview laisserait le ticket sans réponse. On journalise
+                # donc la trace complète et on renvoie le contrat d'erreur.
+                logger.exception("Erreur inattendue pendant l'impression.")
                 return {
                     'success': False,
                     'code': 'error_exception',
-                    'message': f'Erreur d\'impression : {str(e)}'
+                    'message': f'Erreur d\'impression : {e!s}'
                 }
         return {
             'success': False,
@@ -95,6 +110,35 @@ HEALTH_CHECK_INTERVAL = 10
 # plusieurs bornes ne martèlent le serveur en cadence à sa remise en service.
 STATUS_BACKOFF_START = 1.0
 STATUS_BACKOFF_MAX = 30.0
+
+# Attente maximale (secondes) accordée à un thread de fond pour se terminer à la
+# fermeture. Un `join()` SANS timeout figerait l'arrêt de la borne si le thread
+# était bloqué (ex. envoi HTTP au timeout réseau maximal) : on borne donc
+# l'attente, on journalise le thread récalcitrant, et on continue l'arrêt — ces
+# threads sont démons, l'interpréteur ne les attendra pas.
+THREAD_JOIN_TIMEOUT = 5
+
+
+def join_with_timeout(thread, label, timeout=None):
+    """Attend la fin de ``thread`` au plus ``timeout`` secondes
+    (``THREAD_JOIN_TIMEOUT`` par défaut, relu à CHAQUE appel).
+
+    Renvoie ``True`` si le thread s'est bien terminé, ``False`` s'il est encore
+    vivant au bout du délai (cas alors JOURNALISÉ : sans cette trace, un thread
+    qui ne s'arrête jamais passerait inaperçu). Utilisé par tous les arrêts de
+    threads de fond de la borne (imprimante et main) pour qu'aucun `join()` ne
+    soit potentiellement infini."""
+    if thread is None:
+        return True
+    if timeout is None:
+        timeout = THREAD_JOIN_TIMEOUT
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        logger.warning(
+            "Le thread « %s » ne s'est pas arrêté en %ss ; fermeture poursuivie "
+            "(thread démon).", label, timeout)
+        return False
+    return True
 
 
 # --- Contrôle des données d'impression ------------------------------------
@@ -127,18 +171,22 @@ _ALLOWED_CONTROL_CHARS = frozenset('\n\r\t')
 
 
 def _validate_decoded_ticket(text):
-    """Valide le TEXTE décodé d'un ticket. Lève ValueError (message SANS le
-    contenu du ticket) si le ticket dépasse les limites de longueur ou contient
-    un caractère / une commande de contrôle non autorisé(e).
+    """Valide le TEXTE décodé d'un ticket. Lève PrintPayloadError (message SANS
+    le contenu du ticket) si le ticket dépasse les limites de longueur ou
+    contient un caractère / une commande de contrôle non autorisé(e).
+
+    PrintPayloadError dérive de ValueError : les appelants historiques qui
+    filtraient sur ValueError restent valides, mais on peut désormais
+    distinguer « charge refusée » d'une ValueError quelconque.
 
     Seuls sont admis : le texte imprimable, les sauts de ligne / tabulations, et
     les séquences ESC/POS de mise en forme listées dans
     _ALLOWED_ESCPOS_SEQUENCES."""
     if len(text) > MAX_TICKET_CHARS:
-        raise ValueError(
+        raise PrintPayloadError(
             f"ticket trop long ({len(text)} > {MAX_TICKET_CHARS} caractères)")
     if text.count('\n') > MAX_TICKET_LINES:
-        raise ValueError(
+        raise PrintPayloadError(
             f"ticket comportant trop de lignes (> {MAX_TICKET_LINES})")
 
     i = 0
@@ -153,13 +201,13 @@ def _validate_decoded_ticket(text):
                 None,
             )
             if matched is None:
-                raise ValueError(
+                raise PrintPayloadError(
                     f"commande de contrôle non autorisée à la position {i}")
             i += len(matched)
             continue
         code = ord(ch)
         if (code < 0x20 or code == 0x7f) and ch not in _ALLOWED_CONTROL_CHARS:
-            raise ValueError(
+            raise PrintPayloadError(
                 f"caractère de contrôle non autorisé (0x{code:02x}) "
                 f"à la position {i}")
         i += 1
@@ -168,32 +216,33 @@ def _validate_decoded_ticket(text):
 def decode_and_validate_print_payload(data, encoding='utf-8'):
     """Décode et valide STRICTEMENT une charge d'impression base64.
 
-    Renvoie le texte décodé prêt à imprimer, ou lève ValueError avec un message
-    ne contenant JAMAIS le contenu du ticket (journaux sûrs). Contrôles
+    Renvoie le texte décodé prêt à imprimer, ou lève PrintPayloadError (une
+    ValueError) avec un message ne contenant JAMAIS le contenu du ticket
+    (journaux sûrs). Contrôles
     successifs : type / vacuité, taille encodée, base64 strict (validate=True),
     taille décodée, décodage dans l'encodage attendu, puis validation du contenu
     (_validate_decoded_ticket)."""
     if not isinstance(data, str):
-        raise ValueError("charge d'impression non textuelle")
+        raise PrintPayloadError("charge d'impression non textuelle")
     if not data:
-        raise ValueError("charge d'impression vide")
+        raise PrintPayloadError("charge d'impression vide")
     if len(data) > MAX_ENCODED_LEN:
-        raise ValueError(
+        raise PrintPayloadError(
             f"charge encodée trop volumineuse ({len(data)} > {MAX_ENCODED_LEN})")
     # validate=True : refuse tout caractère hors alphabet base64 au lieu de
     # l'ignorer silencieusement (décodage laxiste par défaut).
     try:
         raw = base64.b64decode(data, validate=True)
-    except (ValueError, TypeError):
-        raise ValueError("base64 invalide")
+    except (ValueError, TypeError) as e:
+        raise PrintPayloadError("base64 invalide") from e
     if len(raw) > MAX_DECODED_BYTES:
-        raise ValueError(
+        raise PrintPayloadError(
             f"charge décodée trop volumineuse "
             f"({len(raw)} > {MAX_DECODED_BYTES} octets)")
     try:
         text = raw.decode(encoding)
-    except UnicodeDecodeError:
-        raise ValueError(f"contenu non décodable en {encoding}")
+    except UnicodeDecodeError as e:
+        raise PrintPayloadError(f"contenu non décodable en {encoding}") from e
     _validate_decoded_ticket(text)
     return text
 
@@ -247,8 +296,15 @@ class PrinterStatusThread(threading.Thread):
                 headers=headers,
                 timeout=NETWORK_TIMEOUT
             )
-        except Exception as e:
+        except RequestException as e:
+            # Panne réseau ATTENDUE (serveur injoignable, timeout, TLS) : on
+            # réessaiera avec backoff, inutile d'encombrer les logs d'une trace.
             status_logger.warning("Échec d'envoi du statut imprimante: %s", e)
+            return 'fail'
+        except Exception:
+            # Inattendu (bogue de sérialisation, en-têtes invalides...) : trace
+            # complète, mais le thread de statut ne doit pas mourir pour autant.
+            status_logger.exception("Erreur inattendue à l'envoi du statut imprimante.")
             return 'fail'
 
         if 200 <= response.status_code < 300:
@@ -319,10 +375,10 @@ class PrinterStatusThread(threading.Thread):
         finally:
             # Fermeture de la session HTTP à l'arrêt (si on en est propriétaire).
             if self._owns_session:
-                try:
+                # Chemin de fermeture : une session déjà fermée/cassée ne doit
+                # pas empêcher l'arrêt du thread.
+                with contextlib.suppress(Exception):
                     self.session.close()
-                except Exception:
-                    pass
 
 
 class Printer:
@@ -358,7 +414,7 @@ class Printer:
         # Signalé à la fermeture pour arrêter le thread de santé.
         self._closing = threading.Event()
         self._health_thread = None
-        
+
         # Démarrage du thread de status
         self.status_thread = PrinterStatusThread(
             f'{self.web_url}/api/printer/status',
@@ -370,7 +426,7 @@ class Printer:
             token_refresh_callback=token_refresh_callback
         )
         self.status_thread.start()
-        
+
         # Initialisation de l'imprimante
         try:
             self.initialize_printer()
@@ -386,10 +442,14 @@ class Printer:
                            '3. Ajoutez votre utilisateur au groupe dialout :\n'
                            'sudo usermod -a -G dialout $USER\n'
                            '4. Déconnectez-vous et reconnectez-vous')
-                logger.error(error_msg)
+                # TRY400 volontairement désactivé : le message est un MODE
+                # D'EMPLOI de correction (règles udev), pas un rapport
+                # d'anomalie ; la trace de la ValueError « langid »
+                # n'apporterait rien au technicien.
+                logger.error(error_msg)  # noqa: TRY400
                 self.send_printer_status('error_grant', error_msg)
             else:
-                self.send_printer_status('error_init', f"Erreur d'initialisation : {str(e)}")
+                self.send_printer_status('error_init', f"Erreur d'initialisation : {e!s}")
 
         # Gestionnaire de santé : surveille la connexion et rouvre l'USB dès que
         # possible. Démarré même si l'initialisation ci-dessus a échoué (borne
@@ -418,12 +478,17 @@ class Printer:
             except ValueError as e:
                 if "langid" in str(e):
                     raise  # Remonter l'erreur pour une gestion spéciale
-                logger.error("Erreur lors de l'initialisation de l'imprimante : %s", e)
+                logger.exception("Erreur lors de l'initialisation de l'imprimante.")
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
             except Exception as e:
-                logger.error("Erreur lors de l'initialisation de l'imprimante : %s", e)
+                # FRONTIÈRE MATÉRIELLE : la pile USB (libusb/pyusb/python-escpos)
+                # remonte des types très variés (USBError, OSError, erreurs
+                # propres au backend). On les traite toutes comme « imprimante
+                # indisponible » — mais avec la trace complète, car un type
+                # inattendu ici peut aussi révéler un bogue.
+                logger.exception("Erreur lors de l'initialisation de l'imprimante.")
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
@@ -439,6 +504,9 @@ class Printer:
             try:
                 self.p.close()
             except Exception as e:
+                # Frontière matérielle, chemin de fermeture : un handle déjà
+                # invalide (imprimante débranchée) lève n'importe quoi et ne doit
+                # pas empêcher la suite.
                 logger.debug("Fermeture du handle imprimante: %s", e)
             finally:
                 self.p = None
@@ -459,8 +527,11 @@ class Printer:
         while not self._closing.wait(HEALTH_CHECK_INTERVAL):
             try:
                 self._try_reconnect()
-            except Exception as e:
-                logger.debug("Surveillance imprimante: %s", e)
+            except Exception:
+                # Le thread de santé est la seule chance de reconnexion : il ne
+                # doit JAMAIS mourir. _try_reconnect gère déjà les pannes
+                # attendues ; ce qui arrive ici est inattendu -> trace complète.
+                logger.exception("Erreur inattendue dans la surveillance imprimante.")
 
     def _try_reconnect(self):
         """Réessaie d'ouvrir l'imprimante si elle n'est pas connectée. Ne fait
@@ -478,6 +549,9 @@ class Printer:
                 else:
                     logger.debug("Réessai imprimante échoué: %s", e)
             except Exception as e:
+                # Frontière matérielle : imprimante toujours absente/occupée. Cas
+                # NORMAL tant qu'elle n'est pas rebranchée -> pas de trace, sinon
+                # les logs se rempliraient toutes les HEALTH_CHECK_INTERVAL s.
                 logger.debug("Réessai imprimante échoué: %s", e)
 
     def print(self, data):
@@ -493,12 +567,10 @@ class Printer:
         # peuvent pas toucher en même temps le handle USB. Le second attend le
         # premier au lieu d'entrelacer octets et découpes.
         with self._usb_lock:
-            # si on voulait verifier le papier avant chaque impression
-            if Config().settings.check_paper:
-                paper_code = self.check_paper_status()
-            # sinon c'est toujours bon
-            else:
-                paper_code = 'paper_ok'
+            # Vérification du papier avant chaque impression si l'option est
+            # active ; sinon on considère le papier disponible.
+            paper_code = (self.check_paper_status()
+                          if Config().settings.check_paper else 'paper_ok')
 
             if self.p is None:
                 log.error("Impression impossible : imprimante non initialisée.")
@@ -524,7 +596,7 @@ class Printer:
             # JAMAIS le contenu du ticket (journaux sûrs).
             try:
                 decoded = decode_and_validate_print_payload(data, self.encoding)
-            except ValueError as e:
+            except PrintPayloadError as e:
                 log.warning("Données d'impression refusées : %s", e)
                 self.send_printer_status('invalid_data', f"Données d'impression invalides : {e}")
                 return {
@@ -538,7 +610,8 @@ class Printer:
             try:
                 self.p.text(decoded)
                 self.p.cut()
-                # on renvoie un message pour indiquer que tout va bien si l'imprimante était précédemment en erreur
+                # Message de retour à la normale si l'imprimante était
+                # précédemment en erreur.
                 if self.error:
                     self.error = False
                     self.send_printer_status('print_ok', "Impression réussie.")
@@ -553,7 +626,10 @@ class Printer:
                 # Erreur USB matérielle (débranchement, pipe cassé, périphérique
                 # occupé...) : le handle est probablement mort. On le ferme pour
                 # que le thread de santé le rouvre proprement.
-                log.error("Erreur USB lors de l'impression : %s", e)
+                # TRY400 volontairement désactivé : panne matérielle courante
+                # et explicite (débranchement) ; une trace à chaque impression
+                # ratée noierait le journal de la borne.
+                log.error("Erreur USB lors de l'impression : %s", e)  # noqa: TRY400
                 self._reset_connection()
                 self.send_printer_status('error_print', f"Erreur USB lors de l'impression : {e}")
                 return {
@@ -566,15 +642,17 @@ class Printer:
                 if "langid" in str(e):
                     # langid pendant l'impression = communication USB rompue :
                     # on réinitialise le handle en plus de signaler l'erreur.
-                    log.error("Erreur de permissions USB lors de l'impression.")
+                    log.exception("Erreur de permissions USB lors de l'impression.")
                     self._reset_connection()
-                    self.send_printer_status('error_grant', "Erreur de permissions USB. Vérifiez les droits d'accès.")
+                    self.send_printer_status(
+                        'error_grant',
+                        "Erreur de permissions USB. Vérifiez les droits d'accès.")
                     return {
                         'success': False,
                         'code': 'error_grant',
                         'message': "Erreur de permissions USB. Vérifiez les droits d'accès."
                     }
-                log.error("Erreur lors de l'impression : %s", e)
+                log.exception("Erreur lors de l'impression (valeur invalide).")
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
                 return {
                     'success': False,
@@ -583,14 +661,17 @@ class Printer:
                 }
 
             except Exception as e:
-                log.error("Erreur lors de l'impression : %s", e)
+                # Frontière matérielle : tout ce que la pile USB/escpos peut
+                # lever hors USBError/ValueError. Trace complète (un type
+                # inattendu ici peut révéler un bogue), réponse contractuelle.
+                log.exception("Erreur inattendue lors de l'impression.")
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
                 return {
                     'success': False,
                     'code': 'error_print',
                     'message': f"Erreur lors de l'impression : {e}"
                 }
-        
+
 
     def send_printer_status(self, error, error_message):
         # borne_id : pour distinguer les bornes côté serveur.
@@ -600,7 +681,7 @@ class Printer:
             'error': error,
             'message': error_message,
             'borne_id': self.borne_id,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(UTC).isoformat(),
         }
         # File bornée qui ne conserve que le DERNIER état : si un statut est
         # encore en attente (réseau lent/bloqué), on le remplace au lieu
@@ -624,17 +705,23 @@ class Printer:
         })
 
     def cleanup(self):
-        """À appeler lors de la fermeture de l'application"""
+        """À appeler lors de la fermeture de l'application.
+
+        Tous les ``join()`` sont BORNÉS (``THREAD_JOIN_TIMEOUT``) : un thread
+        bloqué (envoi de statut au timeout réseau maximal, USB qui ne répond
+        pas) ne doit pas figer la fermeture de la borne. Un thread encore vivant
+        au bout du délai est signalé dans les logs ; étant démon, il n'empêchera
+        pas l'arrêt du processus."""
         # Arrêt du gestionnaire de santé (réveil immédiat via l'événement).
         self._closing.set()
         if self._health_thread:
-            self._health_thread.join(timeout=2)
+            join_with_timeout(self._health_thread, "santé imprimante")
         # Fermeture propre du handle USB.
         with self._usb_lock:
             self._close_printer()
         if self.status_thread:
             self.status_thread.stop()
-            self.status_thread.join()
+            join_with_timeout(self.status_thread, "statut imprimante")
 
 
     def check_paper_status(self):
@@ -647,7 +734,7 @@ class Printer:
         with self._usb_lock:
             if self.p is None:
                 self.send_printer_status("error_init", "Imprimante non initialisée")
-                return
+                return None
 
             try:
                 paper_status = self.p.paper_status()
@@ -656,18 +743,24 @@ class Printer:
                     self.send_printer_status("no_paper", "Plus de papier dans l'imprimante")
                     self.is_paper_ok = False
                     return 'no_paper'
-                elif paper_status == 1:
-                    self.send_printer_status("low_paper", "Il ne reste pas beaucoup de papier dans l'imprimante")
+                if paper_status == 1:
+                    self.send_printer_status(
+                        "low_paper",
+                        "Il ne reste pas beaucoup de papier dans l'imprimante")
                     self.is_paper_ok = False
                     return 'low_paper'
                 # on envoie un message si le papier est ok uniquement si ce n'était pas le cas avant
-                else:
-                    if not self.is_paper_ok:
-                        self.send_printer_status("paper_ok", "Papier remis dans l'imprimante")
-                        self.is_paper_ok = True
-                    return 'paper_ok'
+                if not self.is_paper_ok:
+                    self.send_printer_status("paper_ok", "Papier remis dans l'imprimante")
+                    self.is_paper_ok = True
+                return 'paper_ok'
 
             except Exception as e:
+                # Frontière matérielle : la lecture d'état papier échoue dès que
+                # le lien USB est perturbé. Cas courant -> avertissement sans
+                # trace, l'état est remonté au serveur.
                 logger.warning("Erreur lors de la vérification papier: %s", e)
-                self.send_printer_status("error_paper_check", f"Erreur lors de la vérification papier: {str(e)}")
+                self.send_printer_status(
+                    "error_paper_check",
+                    f"Erreur lors de la vérification papier: {e}")
                 return 'paper_check_error'

@@ -25,20 +25,21 @@ def values_differ(loaded: dict, current: dict) -> bool:
 
 
 def default_credentials_error(settings: Settings):
-    """Message d'erreur si les identifiants par défaut sont interdits dans le
+    """Message d'erreur si les identifiants triviaux sont interdits dans le
     contexte courant, sinon ``None``.
 
-    Les identifiants/secret par défaut (``admin``/``admin``, secret d'exemple)
-    sont REFUSÉS à l'enregistrement, sauf si le **mode développement est
-    explicitement activé** — c'est-à-dire la case « Mode debug » cochée
-    (``settings.debug``). En production (debug désactivé), on refuse pour ne pas
-    déployer une borne aux accès triviaux, en cohérence avec le garde-fou de
-    démarrage (``main.py``, ``has_insecure_default_credentials``)."""
-    if settings.has_insecure_default_credentials() and settings.is_production:
+    Les identifiants triviaux (``admin``/``admin`` et autres valeurs usuelles,
+    secret d'application vide ou repris de l'exemple) sont REFUSÉS à
+    l'enregistrement, sauf si le **mode développement est explicitement
+    activé** — c'est-à-dire la case « Mode debug » cochée (``settings.debug``).
+    En production (debug désactivé), on refuse pour ne pas déployer une borne
+    aux accès triviaux, en cohérence avec le garde-fou de démarrage
+    (``main.py``, ``insecure_credentials_reasons``)."""
+    reasons = settings.insecure_credentials_reasons()
+    if reasons and settings.is_production:
         return (
-            "Des identifiants ou le secret d'application par défaut "
-            "(admin/admin) sont encore en place. Ils sont refusés hors mode "
-            "développement.\n\n"
+            "Les identifiants de cette borne sont refusés hors mode "
+            "développement :\n\n- " + "\n- ".join(reasons) + "\n\n"
             "Renseignez un nom d'utilisateur, un mot de passe et un secret "
             "d'application propres à cette borne, ou activez explicitement le "
             "mode debug (développement) pour enregistrer malgré tout."
@@ -48,21 +49,21 @@ def default_credentials_error(settings: Settings):
 
 def default_credentials_warning(settings: Settings):
     """Message d'avertissement (non bloquant) à mettre en évidence lorsque des
-    identifiants par défaut sont présents, sinon ``None``.
+    identifiants triviaux sont présents, sinon ``None``.
 
     - En production (debug désactivé) : l'enregistrement sera refusé.
     - En développement (debug activé) : accepté, mais à corriger avant
       déploiement."""
-    if not settings.has_insecure_default_credentials():
+    reasons = settings.insecure_credentials_reasons()
+    if not reasons:
         return None
+    detail = " ".join(reasons)
     if settings.is_production:
         return (
-            "Identifiants/secret par défaut (admin/admin) détectés : "
-            "l'enregistrement sera REFUSÉ tant que le mode debug "
+            f"{detail} L'enregistrement sera REFUSÉ tant que le mode debug "
             "(développement) n'est pas explicitement activé."
         )
     return (
-        "Identifiants/secret par défaut (admin/admin) : acceptés uniquement "
-        "parce que le mode debug est activé ; à changer avant toute mise en "
-        "production."
+        f"{detail} Accepté uniquement parce que le mode debug est activé ; "
+        "à changer avant toute mise en production."
     )

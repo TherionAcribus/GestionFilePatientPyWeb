@@ -1,11 +1,13 @@
 # config_editor.py
+import contextlib
 import logging
 import threading
 import tkinter as tk
 from dataclasses import fields
-from tkinter import ttk, messagebox
-import logging_config
+from tkinter import messagebox, ttk
+
 import editor_logic
+import logging_config
 from config import Config, Settings
 
 logger = logging.getLogger("borne.editor")
@@ -131,13 +133,14 @@ class ConfigEditor(tk.Tk):
                     row=row, column=0, padx=5, pady=2, sticky="e"
                 )
 
-                if field_type == bool:
+                if field_type is bool:
                     self.variables[field_name] = tk.BooleanVar()
                     widget = ttk.Checkbutton(scrollable_frame, variable=self.variables[field_name])
                     widget.grid(row=row, column=1, padx=5, pady=2, sticky="w")
                 elif field_name in secret_fields:
                     self.variables[field_name] = tk.StringVar()
-                    entry = ttk.Entry(scrollable_frame, textvariable=self.variables[field_name], show="*")
+                    entry = ttk.Entry(scrollable_frame, show="*",
+                                      textvariable=self.variables[field_name])
                     entry.grid(row=row, column=1, padx=5, pady=2, sticky="w")
                     # Case « Afficher » : révèle/masque la valeur de CE champ.
                     reveal_var = tk.BooleanVar(value=False)
@@ -173,7 +176,8 @@ class ConfigEditor(tk.Tk):
         self._printer_button.pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Restaurer les valeurs par défaut",
                    command=self.restore_defaults).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Enregistrer", command=self.save_config).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Enregistrer",
+                   command=self.save_config).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Annuler", command=self._on_close).pack(side=tk.LEFT)
 
         # Pack final
@@ -221,7 +225,7 @@ class ConfigEditor(tk.Tk):
             return
         try:
             settings = self._settings_from_form()
-        except Exception:
+        except (TypeError, ValueError, tk.TclError):
             return
 
         msgs = []
@@ -250,6 +254,9 @@ class ConfigEditor(tk.Tk):
         if not messagebox.askyesno(
                 "Restaurer les valeurs par défaut",
                 "Remplacer tous les champs par les valeurs par défaut ?\n\n"
+                "Les identifiants (nom d'utilisateur, mot de passe, secret "
+                "d'application) seront VIDÉS : le code ne fournit aucun "
+                "identifiant par défaut, vous devrez les ressaisir.\n\n"
                 "Les modifications non enregistrées seront perdues. "
                 "L'enregistrement reste nécessaire pour appliquer les "
                 "changements."):
@@ -262,12 +269,11 @@ class ConfigEditor(tk.Tk):
     def _on_close(self):
         """Ferme la fenêtre en prévenant si des modifications ne sont pas
         enregistrées."""
-        if self._is_dirty():
-            if not messagebox.askyesno(
-                    "Modifications non enregistrées",
-                    "Des modifications n'ont pas été enregistrées.\n\n"
-                    "Quitter sans enregistrer ?"):
-                return
+        if self._is_dirty() and not messagebox.askyesno(
+                "Modifications non enregistrées",
+                "Des modifications n'ont pas été enregistrées.\n\n"
+                "Quitter sans enregistrer ?"):
+            return
         self.destroy()
 
     def save_config(self):
@@ -278,7 +284,7 @@ class ConfigEditor(tk.Tk):
           « succès » : save_settings ne ravale plus les exceptions)."""
         try:
             settings = self._settings_from_form()
-        except Exception as e:
+        except (TypeError, ValueError, tk.TclError) as e:
             messagebox.showerror("Erreur", f"Valeurs invalides : {e}")
             return
 
@@ -303,6 +309,8 @@ class ConfigEditor(tk.Tk):
             # et restaure l'ancienne en mémoire si l'écriture échoue (point 10).
             self.config.save_settings(settings)
         except Exception as e:
+            # FRONTIÈRE : échec d'écriture (droits, disque, magasin de secrets
+            # indisponible en production...) -> remonté tel quel à l'utilisateur.
             messagebox.showerror("Erreur", f"Erreur lors de la sauvegarde : {e}")
             return
 
@@ -310,7 +318,8 @@ class ConfigEditor(tk.Tk):
         self._loaded_values = self._current_form_values()
         messagebox.showinfo(
             "Succès",
-            "Configuration enregistrée avec succès.\nRedémarrez l'application principale pour appliquer les changements."
+            "Configuration enregistrée avec succès.\nRedémarrez "
+            "l'application principale pour appliquer les changements."
         )
         self.destroy()
 
@@ -327,6 +336,9 @@ class ConfigEditor(tk.Tk):
             try:
                 ok, message = worker()
             except Exception as e:
+                # FRONTIÈRE (thread de test) : une exception qui remonterait ici
+                # tuerait le thread sans rien afficher à l'utilisateur.
+                logger.exception("Test de diagnostic en échec.")
                 ok, message = False, f"Erreur inattendue : {e}"
 
             def finish():
@@ -346,7 +358,7 @@ class ConfigEditor(tk.Tk):
         d'application (obtention d'un token) avec l'URL/secret saisis."""
         try:
             settings = self._settings_from_form()
-        except Exception as e:
+        except (TypeError, ValueError, tk.TclError) as e:
             messagebox.showerror("Erreur", f"Valeurs invalides : {e}")
             return
 
@@ -366,14 +378,17 @@ class ConfigEditor(tk.Tk):
                        lambda: self._probe_server(base_url, app_secret))
 
     def _probe_server(self, base_url, app_secret):
+        # Import local : l'éditeur doit rester ouvrable même sans `requests`
+        # installé (le test de serveur est alors le seul indisponible).
         import requests
+        from requests.exceptions import RequestException
         try:
             response = requests.post(
                 f"{base_url}/api/get_app_token",
                 data={'app_secret': app_secret},
                 timeout=_TEST_TIMEOUT,
             )
-        except Exception as e:
+        except RequestException as e:
             return False, f"Serveur injoignable :\n{e}"
 
         if response.status_code == 200:
@@ -396,7 +411,7 @@ class ConfigEditor(tk.Tk):
         saisis (ne fait qu'ouvrir et refermer le périphérique, sans imprimer)."""
         try:
             settings = self._settings_from_form()
-        except Exception as e:
+        except (TypeError, ValueError, tk.TclError) as e:
             messagebox.showerror("Erreur", f"Valeurs invalides : {e}")
             return
 
@@ -417,19 +432,18 @@ class ConfigEditor(tk.Tk):
     def _probe_printer(self, id_vendor, id_product, model):
         try:
             from escpos.printer import Usb
-        except Exception as e:
+        except ImportError as e:
             return False, ("Module d'impression (python-escpos) indisponible dans "
                            f"cet éditeur :\n{e}")
         try:
             printer = Usb(int(id_vendor, 16), int(id_product, 16), profile=model)
         except Exception as e:
+            # FRONTIÈRE MATÉRIELLE : la pile USB remonte des types très variés.
             return False, (f"Imprimante non disponible :\n{e}\n\n"
                            "Vérifiez qu'elle est branchée, sous tension, et que "
                            "l'application principale ne l'utilise pas déjà.")
-        try:
+        with contextlib.suppress(Exception):
             printer.close()
-        except Exception:
-            pass
         return True, f"Imprimante détectée et ouverte avec succès (modèle {model})."
 
 

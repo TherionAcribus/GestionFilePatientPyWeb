@@ -12,9 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import editor_logic  # noqa: E402
-from config import Settings, DEFAULT_APP_SECRET  # noqa: E402
-
+import editor_logic
+from config import INSECURE_APP_SECRETS, Settings
 
 # --- values_differ ---------------------------------------------------------
 
@@ -42,8 +41,8 @@ def test_different_keys_marks_dirty():
 # --- default_credentials_error --------------------------------------------
 
 def _secure_settings(**overrides):
-    base = dict(username="borne1", password="s3cret", app_secret="real-secret",
-                debug=False)
+    base = {"username": "borne1", "password": "s3cret", "app_secret": "real-secret",
+                "debug": False}
     base.update(overrides)
     return Settings(**base)
 
@@ -60,8 +59,10 @@ def test_default_admin_refused_in_production():
     assert "développement" in msg
 
 
-def test_default_app_secret_refused_in_production():
-    settings = _secure_settings(app_secret=DEFAULT_APP_SECRET)
+def test_example_app_secret_refused_in_production():
+    # Secret repris de l'exemple de configuration : refusé en production.
+    example = next(s for s in INSECURE_APP_SECRETS if s)
+    settings = _secure_settings(app_secret=example)
     assert editor_logic.default_credentials_error(settings) is not None
 
 

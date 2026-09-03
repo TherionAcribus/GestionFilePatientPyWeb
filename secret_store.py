@@ -102,7 +102,6 @@ def store_secrets(values) -> bool:
         return False
     ok = True
     for name in SECRET_FIELDS:
-        if name in values:
-            if not set_secret(name, values[name]):
-                ok = False
+        if name in values and not set_secret(name, values[name]):
+            ok = False
     return ok

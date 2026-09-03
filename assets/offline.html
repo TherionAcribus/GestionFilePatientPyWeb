@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<!--
+  Écran affiché LOCALEMENT par la borne (donc visible même serveur injoignable)
+  tant qu'elle n'est pas opérationnelle. Voir ui_assets.offline_html().
+  Aucune dépendance externe : tout est embarqué, la borne peut être hors ligne.
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  html, body {
+    margin: 0; height: 100%; width: 100%;
+    background: #0f172a; color: #e2e8f0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    cursor: none; user-select: none;
+  }
+  .wrap {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 2rem;
+  }
+  .spinner {
+    width: 84px; height: 84px; margin-bottom: 2.5rem;
+    border: 8px solid rgba(226, 232, 240, 0.2);
+    border-top-color: #38bdf8; border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h1 { font-size: 2.6rem; font-weight: 700; margin: 0 0 1rem; }
+  p  { font-size: 1.4rem; margin: 0; color: #94a3b8; }
+</style>
+</head>
+<body oncontextmenu="return false">
+  <div class="wrap">
+    <div class="spinner"></div>
+    <h1>Borne hors ligne</h1>
+    <p>Connexion au serveur en cours&hellip;<br>La borne sera disponible dès que possible.</p>
+  </div>
+</body>
+</html>

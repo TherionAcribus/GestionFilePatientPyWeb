@@ -17,8 +17,8 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
-import secret_store  # noqa: E402
-from secret_store import store_secrets, load_secrets, SECRET_FIELDS  # noqa: E402
+import secret_store
+from secret_store import SECRET_FIELDS, load_secrets, store_secrets
 
 
 @pytest.fixture

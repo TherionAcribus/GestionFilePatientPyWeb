@@ -1,15 +1,17 @@
-import webview
-from config import Config
-import requests
-from requests.exceptions import RequestException
-import time
-import threading
-import json
-import html
 import logging
-import logging_config
-from printer import Printer, PrinterAPI, NETWORK_TIMEOUT
 import os
+import threading
+import time
+
+import requests
+import webview
+from requests.exceptions import RequestException
+
+import logging_config
+import ui_assets
+from config import Config
+from errors import BorneError, PrinterNotReadyError, TokenUnavailableError
+from printer import NETWORK_TIMEOUT, Printer, PrinterAPI, join_with_timeout
 
 logger = logging.getLogger("borne.main")
 
@@ -20,98 +22,11 @@ TOKEN_REFRESH_INTERVAL = 23 * 3600
 # Boucle d'initialisation persistante : au démarrage (et tant que la borne n'a
 # pas obtenu son token), on réessaie avec un backoff exponentiel borné au lieu
 # d'abandonner. Tant que la borne n'est pas opérationnelle, l'écran local
-# « Borne hors ligne » ci-dessous est affiché et la page /patient n'est PAS
-# chargée : aucune inscription (a fortiori nécessitant un ticket) ne peut donc
-# aboutir.
+# « Borne hors ligne » (assets/offline.html, cf. ui_assets) est affiché et la
+# page /patient n'est PAS chargée : aucune inscription (a fortiori nécessitant
+# un ticket) ne peut donc aboutir.
 INIT_BACKOFF_START = 5          # premier réessai après 5 s
 INIT_BACKOFF_MAX = 300          # plafond : 5 min entre deux tentatives
-
-# Écran affiché localement par l'application (donc visible même si le serveur
-# est injoignable) tant que la borne n'est pas opérationnelle. Il masque le
-# curseur et bloque le menu contextuel comme les pages kiosque servies.
-OFFLINE_HTML = """<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<style>
-  html, body {
-    margin: 0; height: 100%; width: 100%;
-    background: #0f172a; color: #e2e8f0;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    cursor: none; user-select: none;
-  }
-  .wrap {
-    height: 100%; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; text-align: center; padding: 2rem;
-  }
-  .spinner {
-    width: 84px; height: 84px; margin-bottom: 2.5rem;
-    border: 8px solid rgba(226, 232, 240, 0.2);
-    border-top-color: #38bdf8; border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  h1 { font-size: 2.6rem; font-weight: 700; margin: 0 0 1rem; }
-  p  { font-size: 1.4rem; margin: 0; color: #94a3b8; }
-</style>
-</head>
-<body oncontextmenu="return false">
-  <div class="wrap">
-    <div class="spinner"></div>
-    <h1>Borne hors ligne</h1>
-    <p>Connexion au serveur en cours&hellip;<br>La borne sera disponible dès que possible.</p>
-  </div>
-</body>
-</html>"""
-
-
-# Écran affiché lorsque la borne refuse de démarrer pour cause de configuration
-# invalide ou non sécurisée. La liste des problèmes détectés est injectée à la
-# place de « __ERROR_ITEMS__ » (échappée) par build_config_error_html().
-CONFIG_ERROR_HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<style>
-  html, body {
-    margin: 0; height: 100%; width: 100%;
-    background: #3f0d0d; color: #fee2e2;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    cursor: none; user-select: none;
-  }
-  .wrap {
-    height: 100%; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; text-align: center; padding: 2rem;
-  }
-  h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 1rem; }
-  p  { font-size: 1.3rem; margin: 0.3rem 0; color: #fecaca; max-width: 44rem; }
-  ul { text-align: left; font-size: 1.15rem; color: #fecaca; max-width: 44rem;
-       margin: 1rem auto; line-height: 1.5; }
-  li { margin: 0.35rem 0; }
-</style>
-</head>
-<body oncontextmenu="return false">
-  <div class="wrap">
-    <h1>Configuration invalide</h1>
-    <p>La borne refuse de démarrer pour les raisons suivantes :</p>
-    <ul>__ERROR_ITEMS__</ul>
-    <p>Ouvrez l'éditeur de configuration pour corriger ces points.</p>
-  </div>
-</body>
-</html>"""
-
-
-def build_config_error_html(errors):
-    """Construit l'écran d'erreur de configuration en listant les problèmes.
-    Chaque message est échappé (html.escape) avant insertion : une valeur de
-    configuration ne peut donc pas injecter de balise dans l'écran."""
-    if errors:
-        items = "".join(f"<li>{html.escape(str(e))}</li>" for e in errors)
-    else:
-        items = "<li>Configuration invalide.</li>"
-    return CONFIG_ERROR_HTML_TEMPLATE.replace("__ERROR_ITEMS__", items)
 
 
 class WindowControlAPI:
@@ -129,9 +44,12 @@ class WindowControlAPI:
             try:
                 return self._fullscreen_callback()
             except Exception as e:
+                # FRONTIÈRE (pont JavaScript) : la page attend toujours un
+                # dictionnaire ; on journalise la trace et on renvoie l'échec.
+                logger.exception("Erreur inattendue au basculement plein écran.")
                 return {
                     'success': False,
-                    'message': f'Erreur de plein écran : {str(e)}'
+                    'message': f'Erreur de plein écran : {e!s}'
                 }
         return {
             'success': False,
@@ -208,17 +126,20 @@ class WebViewClient:
         # Validation de forme (URL/parseur, IDs USB, modèle, secrets, types).
         self._config_errors.extend(settings.validate())
 
-        # Garde-fou sécurité : identifiants/secret par défaut (admin/admin). On
-        # REFUSE en production (accès triviaux) ; simple avertissement en debug.
-        if settings.has_insecure_default_credentials():
+        # Garde-fou sécurité : identifiants triviaux (admin/admin, secret repris
+        # de l'exemple). Le code ne fournit AUCUN identifiant par défaut ; ceux
+        # détectés ici viennent donc de la configuration du poste. On REFUSE en
+        # production (accès triviaux) ; simple avertissement en debug.
+        insecure = settings.insecure_credentials_reasons()
+        if insecure:
             if settings.is_production:
-                self._config_errors.append(
-                    "Identifiants ou secret d'application par défaut (admin/admin) "
-                    "détectés en production : configurez des identifiants propres "
-                    "à la borne.")
+                self._config_errors.extend(
+                    f"{reason} Configurez des identifiants propres à cette borne "
+                    "(config-editor.py)." for reason in insecure)
             else:
-                logger.warning("Identifiants/secret par défaut (admin/admin). "
-                               "Refusé en production ; corrigez avant déploiement.")
+                for reason in insecure:
+                    logger.warning("%s Refusé en production ; corrigez avant "
+                                   "déploiement.", reason)
 
         if self._config_errors:
             self._config_error = True
@@ -253,12 +174,12 @@ class WebViewClient:
             # Configuration refusée : on n'affiche NI /patient ni l'écran hors
             # ligne, mais un écran d'erreur listant les problèmes détectés, et la
             # borne reste non opérationnelle.
-            content_kwargs = {'html': build_config_error_html(self._config_errors)}
+            content_kwargs = {'html': ui_assets.build_config_error_html(self._config_errors)}
         elif self.is_operational():
             content_kwargs = {'url': f"{self.base_url}/patient"}
             self._patient_page_shown = True
         else:
-            content_kwargs = {'html': OFFLINE_HTML}
+            content_kwargs = {'html': ui_assets.offline_html()}
 
         self.window = webview.create_window(
             title="PharmaFile",
@@ -279,63 +200,16 @@ class WebViewClient:
     # Injection de code JS pour désactiver le menu contextuel et gérer le curseur
     def disable_context_menu_and_cursor(self):
         """Désactive le menu contextuel, bloque le pinch-zoom (multitouch) et
-        gère le curseur.
-
-        Multitouch : preventDefault UNIQUEMENT si plusieurs points de contact
-        (pinch/zoom). Un tap simple laisse passer le clic synthétique, sinon des
-        boutons deviennent inopérants selon le moteur WebView.
-
-        Curseur : masqué par défaut (borne tactile en libre-service) MAIS
-        réapparaît dès qu'une souris est utilisée (maintenance) puis se remasque
-        au toucher suivant. Le réglage hide_cursor=False force l'affichage
-        permanent. Les faux 'mousemove' générés par le tactile sont ignorés."""
-        hide_cursor = "true" if Config().settings.hide_cursor else "false"
-        js_code = """
-        if (!window._contextMenuDisabled) {
-            // Désactive le menu contextuel
-            window.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                return false;
-            }, true);
-
-            // Ne bloque QUE le multitouch (pinch/zoom) : les taps simples
-            // passent normalement (clic synthétique préservé).
-            window.addEventListener('touchstart', function(e) {
-                if (e.touches.length > 1) {
-                    e.preventDefault();
-                }
-            }, {passive: false, capture: true});
-
-            var hideCursor = %s;
-            if (hideCursor) {
-                // Curseur masqué tant que la classe 'using-mouse' est absente ;
-                // une souris qui bouge la pose, un toucher la retire.
-                var style = document.createElement('style');
-                style.textContent = "html:not(.using-mouse) * { cursor: none !important; }";
-                document.head.appendChild(style);
-
-                var lastTouch = 0;
-                window.addEventListener('touchstart', function() {
-                    lastTouch = Date.now();
-                    document.documentElement.classList.remove('using-mouse');
-                }, true);
-                window.addEventListener('mousemove', function() {
-                    // Ignore les 'mousemove' synthétiques émis juste après un toucher.
-                    if (Date.now() - lastTouch < 800) { return; }
-                    document.documentElement.classList.add('using-mouse');
-                }, true);
-            }
-
-            window._contextMenuDisabled = true;
-        }
-        """ % hide_cursor
-        self.window.evaluate_js(js_code)
+        gère le curseur. Le script vit dans ``assets/kiosk_input.js`` (voir
+        ui_assets) ; seul le réglage ``hide_cursor`` y est injecté."""
+        self.window.evaluate_js(
+            ui_assets.kiosk_input_script(Config().settings.hide_cursor))
 
     def get_app_token(self, max_retries=3, retry_delay=2):
         """Obtient le token d'application avec système de retry"""
         url = f'{self.base_url}/api/get_app_token'
         data = {'app_secret': Config().settings.app_secret}
-        
+
         for attempt in range(max_retries):
             try:
                 # timeout : sans lui, une borne face à un serveur injoignable
@@ -348,17 +222,18 @@ class WebViewClient:
                     logging_config.register_secret(self.app_token)
                     logger.info("Token d'application obtenu (connexion serveur OK).")
                     return True
-                else:
-                    logger.warning("Échec de l'obtention du token (tentative %d/%d, HTTP %s).",
-                                   attempt + 1, max_retries, response.status_code)
+                logger.warning("Échec de l'obtention du token (tentative %d/%d, HTTP %s).",
+                               attempt + 1, max_retries, response.status_code)
             except RequestException as e:
                 logger.warning("Erreur réseau à l'obtention du token (tentative %d/%d): %s",
                                attempt + 1, max_retries, e)
-            
+
             if attempt < max_retries - 1:  # Ne pas attendre après la dernière tentative
                 time.sleep(retry_delay)
-        
-        raise Exception("Impossible d'obtenir le token après plusieurs tentatives")
+
+        raise TokenUnavailableError(
+            f"Impossible d'obtenir le token d'application après {max_retries} "
+            "tentative(s)")
 
     def start_token_refresh(self):
         """Renouvelle le token avant son expiration (24 h côté serveur).
@@ -377,9 +252,16 @@ class WebViewClient:
                         self.printer.update_token(self.app_token)
                     self._next_refresh_delay = TOKEN_REFRESH_INTERVAL
                     logger.info("Token d'application renouvelé.")
-                except Exception as e:
+                except TokenUnavailableError as e:
+                    # Panne ATTENDUE (serveur injoignable) : réessai rapproché.
                     self._next_refresh_delay = 300  # réessai dans 5 min
                     logger.warning("Échec du renouvellement du token, réessai bientôt : %s", e)
+                except Exception:
+                    # Inattendu : trace complète, mais le thread doit survivre —
+                    # sans lui le token expirerait et TOUS les appels
+                    # authentifiés tomberaient en 401.
+                    self._next_refresh_delay = 300
+                    logger.exception("Erreur inattendue au renouvellement du token.")
 
         self._token_refresh_thread = threading.Thread(target=_loop, daemon=True)
         self._token_refresh_thread.start()
@@ -407,9 +289,19 @@ class WebViewClient:
                     self._set_operational(True)
                     logger.info("Borne opérationnelle.")
                     return
-                except Exception as e:
+                except BorneError as e:
+                    # Pannes ATTENDUES : serveur injoignable (token) ou
+                    # imprimante pas prête. On réessaie, écran hors ligne affiché.
                     self.connected = False
-                    logger.warning("Initialisation impossible, nouvel essai dans %ss : %s", delay, e)
+                    logger.warning("Initialisation impossible, nouvel essai "
+                                   "dans %ss : %s", delay, e)
+                except Exception:
+                    # Inattendu : trace complète, mais la boucle continue (une
+                    # borne ne doit jamais rester bloquée sur l'écran hors ligne
+                    # à cause d'une erreur ponctuelle).
+                    self.connected = False
+                    logger.exception("Erreur inattendue à l'initialisation, "
+                                     "nouvel essai dans %ss.", delay)
                     # Attente interruptible : réveil immédiat à la fermeture.
                     if self._init_stop.wait(delay):
                         return
@@ -442,10 +334,13 @@ class WebViewClient:
             self._patient_page_shown = True
         try:
             self.window.load_url(f"{self.base_url}/patient")
-        except Exception as e:
+        except Exception:
+            # Frontière pywebview (le moteur peut lever selon le backend Qt) :
+            # on annule le marquage pour qu'une tentative ultérieure soit
+            # possible, avec la trace complète pour diagnostiquer.
             with self._operational_lock:
                 self._patient_page_shown = False
-            logger.error("Erreur lors du chargement de /patient : %s", e)
+            logger.exception("Erreur lors du chargement de /patient.")
 
     def initialize_printer(self):
         """Initialise l'imprimante une fois le token obtenu"""
@@ -461,7 +356,9 @@ class WebViewClient:
             # Une fois l'imprimante initialisée, on la passe à l'API
             self.printer_api.set_print_callback(self.printer.print)
         else:
-            raise Exception("Tentative d'initialisation de l'imprimante sans token")
+            raise PrinterNotReadyError(
+                "Tentative d'initialisation de l'imprimante sans token "
+                "d'application")
 
     def _refresh_app_token_for_printer(self):
         """Renouvelle le token à la demande du thread de statut imprimante (ex:
@@ -473,8 +370,13 @@ class WebViewClient:
             if self.printer:
                 self.printer.update_token(self.app_token)
             return self.app_token
-        except Exception as e:
+        except TokenUnavailableError as e:
             logger.warning("Échec du renouvellement du token (statut imprimante) : %s", e)
+            return None
+        except Exception:
+            # Appelé depuis le thread de statut imprimante : ne jamais propager.
+            logger.exception("Erreur inattendue au renouvellement du token "
+                             "(statut imprimante).")
             return None
 
 
@@ -523,119 +425,34 @@ class WebViewClient:
                 'is_fullscreen': self.is_fullscreen
             }
         except Exception as e:
+            # Frontière pywebview : renvoyer un résultat au lieu de propager
+            # dans le pont JavaScript.
+            logger.exception("Basculement du mode plein écran impossible.")
             return {
                 'success': False,
-                'message': f'Erreur lors du basculement du mode plein écran : {str(e)}'
+                'message': f'Erreur lors du basculement du mode plein écran : {e}'
             }
-        
+
     def inject_keyboard_handler(self):
-        """Injecte le gestionnaire de touches F11"""
-        script = """
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'F11') {
-                event.preventDefault();  // Empêche le comportement par défaut du navigateur
-                window.pywebview.api.window.toggle_fullscreen();
-            }
-        });
-        """
-        self.window.evaluate_js(script)
+        """Injecte le gestionnaire de touches F11 (assets/keyboard.js)."""
+        self.window.evaluate_js(ui_assets.keyboard_script())
 
     def inject_kiosk_protection(self):
         """Injecte les protections kiosque sur les pages servies (clic droit,
-        zoom, sélection sur appui long).
-
-        On NE bloque PLUS tous les touchstart : appeler preventDefault() sur
-        chaque touchstart supprime, selon le moteur WebView, le clic synthétique
-        et rend des boutons tactiles inopérants. On privilégie CSS touch-action
-        (supprime le double-tap zoom et le délai de clic tactile SANS empêcher
-        les taps) + user-select (empêche la sélection de texte sur appui long).
-        Le pinch/zoom multitouch est neutralisé par
-        disable_context_menu_and_cursor() (preventDefault UNIQUEMENT si
-        plusieurs points de contact)."""
-        protection_script = """
-        if (!window._kioskProtected) {
-            // Bloque le menu contextuel (clic droit / appui long)
-            document.addEventListener('contextmenu', function(e) {
-                e.preventDefault();
-                return false;
-            }, false);
-
-            // Approche CSS (préférée à un preventDefault global) :
-            // - touch-action: manipulation -> désactive le double-tap zoom et le
-            //   délai de 300 ms, mais laisse passer les taps -> clics OK.
-            // - user-select/touch-callout: none -> pas de sélection ni de
-            //   menu sur appui long. Les champs de saisie restent sélectionnables.
-            var style = document.createElement('style');
-            style.textContent =
-                "html { touch-action: manipulation; } " +
-                "* { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; } " +
-                "input, textarea { -webkit-user-select: text; user-select: text; }";
-            document.head.appendChild(style);
-
-            window._kioskProtected = true;
-        }
-        """
-        self.window.evaluate_js(protection_script)
+        zoom, sélection sur appui long). Le script vit dans
+        ``assets/kiosk_protection.js`` (voir ui_assets)."""
+        self.window.evaluate_js(ui_assets.kiosk_protection_script())
         self._protection_injected = True
 
 
     def inject_login_script(self):
-        """Injecte et exécute le script de connexion automatique.
-
-        Les identifiants sont sérialisés en JSON (json.dumps) AVANT insertion :
-        un guillemet, un antislash, un saut de ligne ou toute séquence spéciale
-        dans le mot de passe ne peut donc plus casser le script ni injecter de
-        code. json.dumps produit un littéral chaîne JavaScript sûr (échappe
-        guillemets/antislash/caractères de contrôle ; ensure_ascii encode les
-        non-ASCII en \\uXXXX). On insère le résultat SANS guillemets autour :
-        json.dumps les fournit déjà."""
-        username_js = json.dumps(self.username)
-        password_js = json.dumps(self.password)
-        script = f"""
-        function performLogin() {{
-            console.log("Injecting login script");
-            var usernameInput = document.querySelector('input[name="username"]');
-            var passwordInput = document.querySelector('input[name="password"]');
-            var rememberCheckbox = document.querySelector('input[name="remember"]');
-
-            if (usernameInput) {{
-                console.log("Found username input");
-                usernameInput.value = {username_js};
-            }} else {{
-                console.log("Username input not found");
-            }}
-
-            if (passwordInput) {{
-                console.log("Found password input");
-                passwordInput.value = {password_js};
-            }} else {{
-                console.log("Password input not found");
-            }}
-
-            if (rememberCheckbox) {{
-                console.log("Found remember me checkbox");
-                rememberCheckbox.checked = true;
-            }} else {{
-                console.log("Remember me checkbox not found");
-            }}
-
-            var form = usernameInput ? usernameInput.closest('form') : null;
-            if (form) {{
-                console.log("Found form, submitting");
-                form.submit();
-            }} else {{
-                console.log("Form not found");
-            }}
-        }}
-
-        // Vérifie si le DOM est déjà chargé
-        if (document.readyState === 'loading') {{
-            document.addEventListener('DOMContentLoaded', performLogin);
-        }} else {{
-            performLogin();
-        }}
-        """
-        self.window.evaluate_js(script)
+        """Injecte et exécute le script de connexion automatique
+        (``assets/login.js``). Les identifiants sont sérialisés en littéraux
+        JSON par ui_assets.login_script AVANT insertion : un guillemet, un
+        antislash ou un saut de ligne dans le mot de passe ne peut donc ni
+        casser le script ni y injecter de code."""
+        self.window.evaluate_js(
+            ui_assets.login_script(self.username, self.password))
 
     def run(self):
         """Lance l'application"""
@@ -649,8 +466,13 @@ class WebViewClient:
             webview.start(debug=Config().settings.debug)
         finally:
             logger.info("Arrêt de la borne.")
+            # Réveil immédiat des boucles de fond, puis attente BORNÉE de leur
+            # terminaison (jamais de join() infini : une boucle bloquée sur un
+            # appel réseau ne doit pas figer la fermeture de la borne).
             self._init_stop.set()
             self._token_refresh_stop.set()
+            join_with_timeout(self._init_thread, "initialisation borne")
+            join_with_timeout(self._token_refresh_thread, "renouvellement du token")
             if self.printer:
                 self.printer.cleanup()
 

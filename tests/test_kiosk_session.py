@@ -20,7 +20,6 @@ des doublures.
 import os
 import sys
 import threading
-import time
 
 import pytest
 from requests.exceptions import ConnectionError as ReqConnectionError

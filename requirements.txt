@@ -10,7 +10,7 @@ pywebview==5.1
 PySide6==6.7.0            # backend Qt de pywebview (PYWEBVIEW_GUI="qt")
 
 # Appels HTTP vers le serveur (token, statuts imprimante).
-requests==2.32.3
+requests==2.33.0
 
 # Imprimante ticket ESC/POS via USB.
 python-escpos==3.1

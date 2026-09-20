@@ -5,7 +5,7 @@
 # découplage matériel de Printer (device_factory) permet une fausse imprimante.
 # Seul `requests` (dépendance d'exécution) est nécessaire pour importer le
 # module `printer` — il est donc inclus ici pour la CI.
-requests==2.32.3
+requests==2.33.0
 
 # Tests
 pytest==8.3.2

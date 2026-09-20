@@ -302,10 +302,16 @@ class WebViewClient:
                     self.connected = False
                     logger.exception("Erreur inattendue à l'initialisation, "
                                      "nouvel essai dans %ss.", delay)
-                    # Attente interruptible : réveil immédiat à la fermeture.
-                    if self._init_stop.wait(delay):
-                        return
-                    delay = min(delay * 2, INIT_BACKOFF_MAX)
+
+                # Attente commune à TOUS les échecs, attendus ou non : avant,
+                # elle ne figurait que dans la branche « inattendu », si bien
+                # qu'une panne prévue (token, imprimante) annonçait un délai
+                # mais repartait immédiatement — la borne martelait
+                # /api/get_app_token et l'USB en boucle serrée. Interruptible
+                # (réveil immédiat à la fermeture), puis backoff borné.
+                if self._init_stop.wait(delay):
+                    return
+                delay = min(delay * 2, INIT_BACKOFF_MAX)
 
         self._init_thread = threading.Thread(target=_supervise, daemon=True)
         self._init_thread.start()

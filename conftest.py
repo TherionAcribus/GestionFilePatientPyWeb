@@ -63,5 +63,15 @@ def _install_usb_stub():
     sys.modules['usb.core'] = core_mod
 
 
+def _install_webview_stub():
+    """``main`` importe ``webview`` (pywebview) au niveau module ; la
+    bibliothèque n'est pas installée en CI (pas de backend GUI). Un module vide
+    suffit : les tests n'ouvrent jamais de fenêtre."""
+    if 'webview' in sys.modules:
+        return
+    sys.modules['webview'] = types.ModuleType('webview')
+
+
 _install_escpos_stub()
 _install_usb_stub()
+_install_webview_stub()

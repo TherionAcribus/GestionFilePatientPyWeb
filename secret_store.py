@@ -1,4 +1,4 @@
-"""Stockage sécurisé des secrets de la borne (``password`` et ``app_secret``).
+"""Stockage sécurisé du secret de la borne (``app_secret``).
 
 Historique
 ----------
@@ -26,7 +26,7 @@ logger = logging.getLogger("borne.secret_store")
 SERVICE_NAME = "GestionFile-Borne"
 
 # Champs de ``Settings`` traités comme secrets (jamais écrits en clair).
-SECRET_FIELDS = ("password", "app_secret")
+SECRET_FIELDS = ("app_secret",)
 
 
 class SecretStoreUnavailableError(Exception):

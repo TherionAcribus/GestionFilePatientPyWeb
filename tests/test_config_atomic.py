@@ -45,7 +45,7 @@ def _read_json(tmp_path):
 
 
 def _new_settings(**overrides):
-    base = {"base_url": "http://127.0.0.1:5000", "debug": True, "username": "borne1",
+    base = {"base_url": "http://127.0.0.1:5000", "debug": True, "borne_id": "borne1",
                 "printer_id_vendor": "0x04b8", "printer_id_product": "0x0202",
                 "printer_model": "TM-T88II"}
     base.update(overrides)
@@ -55,27 +55,27 @@ def _new_settings(**overrides):
 def test_no_leftover_temp_file_after_success(store):
     tmp_path = store["_path"]
     cfg = Config()  # écrit déjà le fichier par défaut
-    cfg.save_settings(_new_settings(username="borne-ok"))
+    cfg.save_settings(_new_settings(borne_id="borne-ok"))
     assert not list(tmp_path.glob("settings-*.tmp"))
-    assert _read_json(tmp_path)["username"] == "borne-ok"
+    assert _read_json(tmp_path)["borne_id"] == "borne-ok"
 
 
 def test_bak_copy_created_on_overwrite(store):
     tmp_path = store["_path"]
-    cfg = Config()                                   # crée settings.json
-    cfg.save_settings(_new_settings(username="v1"))  # 1re réécriture
-    cfg.save_settings(_new_settings(username="v2"))  # remplace -> .bak = v1
+    cfg = Config()                                    # crée settings.json
+    cfg.save_settings(_new_settings(borne_id="v1"))   # 1re réécriture
+    cfg.save_settings(_new_settings(borne_id="v2"))   # remplace -> .bak = v1
     bak = tmp_path / "settings.json.bak"
     assert bak.exists()
     with open(bak, encoding="utf-8") as f:
-        assert json.load(f)["username"] == "v1"
-    assert _read_json(tmp_path)["username"] == "v2"
+        assert json.load(f)["borne_id"] == "v1"
+    assert _read_json(tmp_path)["borne_id"] == "v2"
 
 
 def test_write_failure_restores_previous_and_leaves_file_intact(store, monkeypatch):
     tmp_path = store["_path"]
     cfg = Config()
-    cfg.save_settings(_new_settings(username="stable"))
+    cfg.save_settings(_new_settings(borne_id="stable"))
     previous = cfg.settings
 
     # os.replace échoue : le remplacement atomique n'a pas lieu.
@@ -84,13 +84,13 @@ def test_write_failure_restores_previous_and_leaves_file_intact(store, monkeypat
     monkeypatch.setattr(config_mod.os, "replace", _boom)
 
     with pytest.raises(OSError):
-        cfg.save_settings(_new_settings(username="jamais-ecrit"))
+        cfg.save_settings(_new_settings(borne_id="jamais-ecrit"))
 
     # L'objet en mémoire est restauré à l'ancienne configuration...
     assert cfg.settings is previous
-    assert cfg.settings.username == "stable"
+    assert cfg.settings.borne_id == "stable"
     # ...le fichier sur disque n'a pas changé...
-    assert _read_json(tmp_path)["username"] == "stable"
+    assert _read_json(tmp_path)["borne_id"] == "stable"
     # ...et aucun fichier temporaire ne subsiste.
     assert not list(tmp_path.glob("settings-*.tmp"))
 
@@ -98,10 +98,9 @@ def test_write_failure_restores_previous_and_leaves_file_intact(store, monkeypat
 def test_written_content_is_valid_and_complete(store):
     tmp_path = store["_path"]
     cfg = Config()
-    cfg.save_settings(_new_settings(username="complet", printer_model="TM-T88III"))
+    cfg.save_settings(_new_settings(borne_id="complet", printer_model="TM-T88III"))
     data = _read_json(tmp_path)
-    assert data["username"] == "complet"
+    assert data["borne_id"] == "complet"
     assert data["printer_model"] == "TM-T88III"
-    # Secrets jamais en clair (magasin disponible).
-    assert data["password"] == ""
+    # Secret jamais en clair (magasin disponible).
     assert data["app_secret"] == ""

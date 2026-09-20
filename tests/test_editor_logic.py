@@ -2,8 +2,8 @@
 
 Couvre, sans construire d'interface tkinter :
 - la détection des modifications non enregistrées (values_differ) ;
-- le refus des identifiants par défaut hors mode développement explicitement
-  activé (default_credentials_error) et l'avertissement associé
+- le refus du secret d'application trivial hors mode développement
+  explicitement activé (default_credentials_error) et l'avertissement associé
   (default_credentials_warning).
 """
 
@@ -18,19 +18,19 @@ from config import INSECURE_APP_SECRETS, Settings
 # --- values_differ ---------------------------------------------------------
 
 def test_identical_forms_are_not_dirty():
-    loaded = {"username": "borne1", "debug": False}
+    loaded = {"app_secret": "borne1", "debug": False}
     assert editor_logic.values_differ(loaded, dict(loaded)) is False
 
 
 def test_changed_value_marks_dirty():
-    loaded = {"username": "borne1", "debug": False}
-    current = {"username": "borne2", "debug": False}
+    loaded = {"app_secret": "borne1", "debug": False}
+    current = {"app_secret": "borne2", "debug": False}
     assert editor_logic.values_differ(loaded, current) is True
 
 
 def test_changed_bool_marks_dirty():
-    loaded = {"username": "borne1", "debug": False}
-    current = {"username": "borne1", "debug": True}
+    loaded = {"app_secret": "borne1", "debug": False}
+    current = {"app_secret": "borne1", "debug": True}
     assert editor_logic.values_differ(loaded, current) is True
 
 
@@ -41,22 +41,14 @@ def test_different_keys_marks_dirty():
 # --- default_credentials_error --------------------------------------------
 
 def _secure_settings(**overrides):
-    base = {"username": "borne1", "password": "s3cret", "app_secret": "real-secret",
-                "debug": False}
+    base = {"app_secret": "real-secret", "debug": False}
     base.update(overrides)
     return Settings(**base)
 
 
-def test_secure_credentials_never_blocked():
-    # Identifiants propres, en production : aucun refus.
+def test_secure_secret_never_blocked():
+    # Secret propre, en production : aucun refus.
     assert editor_logic.default_credentials_error(_secure_settings()) is None
-
-
-def test_default_admin_refused_in_production():
-    settings = _secure_settings(username="admin", password="admin")
-    msg = editor_logic.default_credentials_error(settings)
-    assert msg is not None
-    assert "développement" in msg
 
 
 def test_example_app_secret_refused_in_production():
@@ -71,27 +63,27 @@ def test_empty_app_secret_refused_in_production():
     assert editor_logic.default_credentials_error(settings) is not None
 
 
-def test_default_credentials_allowed_in_dev_mode():
+def test_default_secret_allowed_in_dev_mode():
     # debug=True => mode développement explicitement activé : accepté.
-    settings = _secure_settings(username="admin", password="admin", debug=True)
+    settings = _secure_settings(app_secret="", debug=True)
     assert editor_logic.default_credentials_error(settings) is None
 
 
 # --- default_credentials_warning ------------------------------------------
 
-def test_no_warning_when_credentials_are_custom():
+def test_no_warning_when_secret_is_custom():
     assert editor_logic.default_credentials_warning(_secure_settings()) is None
 
 
 def test_warning_in_production_mentions_refusal():
-    settings = _secure_settings(username="admin", password="admin")
+    settings = _secure_settings(app_secret="")
     msg = editor_logic.default_credentials_warning(settings)
     assert msg is not None
     assert "REFUS" in msg.upper()
 
 
 def test_warning_in_dev_mode_is_advisory():
-    settings = _secure_settings(username="admin", password="admin", debug=True)
+    settings = _secure_settings(app_secret="", debug=True)
     msg = editor_logic.default_credentials_warning(settings)
     assert msg is not None
     assert "REFUS" not in msg.upper()

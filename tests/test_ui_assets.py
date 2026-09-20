@@ -6,13 +6,15 @@ les rend justement testables. On vérifie ici ce qui protégeait déjà la borne
 quand tout était inline :
 
 - l'échappement des messages de configuration (pas d'injection de balise) ;
-- la sérialisation JSON des identifiants injectés dans le script de connexion ;
 - la substitution en UNE passe (une valeur substituée n'est jamais réinterprétée
   comme un marqueur) ;
 - les replis quand une ressource est illisible (la borne affiche quelque chose
   plutôt que rien).
+
+Le script de connexion automatique (``assets/login.js``) a été retiré : la
+borne n'injecte plus d'identifiants dans le DOM — la session patient est
+obtenue par ticket signé navigué directement par la WebView (cf. main.py).
 """
-import json
 import os
 import sys
 
@@ -79,21 +81,11 @@ def test_kiosk_input_script_injects_cursor_setting():
     assert "__HIDE_CURSOR__" not in ui_assets.kiosk_input_script(True)
 
 
-def test_login_script_serialises_credentials_as_json():
-    # Mot de passe contenant guillemets, antislash et saut de ligne : il ne doit
-    # ni casser le script ni permettre d'y injecter du code.
-    password = 'a"b\\c\nd</script>'
-    script = ui_assets.login_script("borne1", password)
-    assert json.dumps(password) in script
-    assert 'usernameInput.value = "borne1";' in script
-    # La chaîne brute (non échappée) n'apparaît jamais telle quelle.
-    assert 'a"b\\c\nd' not in script
-
-
-def test_login_script_does_not_reinterpret_credentials_as_placeholders():
-    script = ui_assets.login_script("__PASSWORD_JSON__", "secret")
-    assert "__PASSWORD_JSON__" in script  # resté littéral
-    assert script.count('"secret"') == 1
+def test_login_script_is_gone():
+    """Régression : aucun mécanisme d'injection d'identifiants ne doit subsister
+    — la borne s'authentifie par ticket signé, pas par formulaire."""
+    assert not hasattr(ui_assets, "login_script")
+    assert not (ui_assets.ASSETS_DIR / "login.js").exists()
 
 
 def test_scripts_are_idempotent_guarded():
@@ -137,7 +129,6 @@ def test_missing_script_asset_yields_empty_injection(monkeypatch, tmp_path):
     monkeypatch.setattr(ui_assets, "ASSETS_DIR", tmp_path)
     assert ui_assets.kiosk_protection_script() == ""
     assert ui_assets.keyboard_script() == ""
-    assert ui_assets.login_script("u", "p") == ""
 
 
 def test_each_placeholder_appears_once_per_asset():
@@ -148,7 +139,6 @@ def test_each_placeholder_appears_once_per_asset():
     expected = {
         "config_error.html": ["ERROR_ITEMS"],
         "kiosk_input.js": ["HIDE_CURSOR"],
-        "login.js": ["USERNAME_JSON", "PASSWORD_JSON"],
         "offline.html": [],
         "kiosk_protection.js": [],
         "keyboard.js": [],

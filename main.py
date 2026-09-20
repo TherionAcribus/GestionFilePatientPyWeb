@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 import time
+from urllib.parse import urlparse
 
 import requests
 import webview
@@ -10,7 +11,7 @@ from requests.exceptions import RequestException
 import logging_config
 import ui_assets
 from config import Config
-from errors import BorneError, PrinterNotReadyError, TokenUnavailableError
+from errors import BorneError, PrinterNotReadyError, SessionUnavailableError, TokenUnavailableError
 from printer import NETWORK_TIMEOUT, Printer, PrinterAPI, join_with_timeout
 
 logger = logging.getLogger("borne.main")
@@ -18,6 +19,11 @@ logger = logging.getLogger("borne.main")
 # Renouvellement du token avant son expiration (24 h côté serveur). Marge d'1 h
 # pour absorber d'éventuels échecs/réessais réseau.
 TOKEN_REFRESH_INTERVAL = 23 * 3600
+
+# Re-connexion de la borne (session patient expirée -> page /login détectée) :
+# au plus une demande de ticket par intervalle, pour ne pas marteler le serveur
+# si l'échec persiste.
+KIOSK_RELOGIN_MIN_INTERVAL = 30
 
 # Boucle d'initialisation persistante : au démarrage (et tant que la borne n'a
 # pas obtenu son token), on réessaie avec un backoff exponentiel borné au lieu
@@ -63,11 +69,11 @@ class WebViewClient:
         self.app_token = None
         self.printer = None
         self.connected = False
-        self.username = Config().settings.username
-        self.password = Config().settings.password
-        # Masque le mot de passe et le secret d'application dans TOUS les logs
-        # (défense en profondeur : même si un message les contenait par erreur).
-        logging_config.register_secret(self.password)
+        # La borne ne connaît QUE son identité machine : le secret applicatif
+        # (jeton) suffit — plus de compte utilisateur ni de mot de passe à
+        # injecter dans la page de connexion.
+        # Masque le secret d'application dans TOUS les logs (défense en
+        # profondeur : même si un message le contenait par erreur).
         logging_config.register_secret(Config().settings.app_secret)
         # URL normalisée par un parseur (schéma/hôte en minuscules, sans slash
         # final). On NE force PLUS silencieusement http -> https : le schéma
@@ -107,10 +113,14 @@ class WebViewClient:
         self._patient_page_shown = False
         self._init_stop = threading.Event()
         self._init_thread = None
+        # URL de connexion signée (ticket borne) obtenue auprès du serveur ;
+        # naviguée par la WebView pour poser le cookie de session patient.
+        self._patient_login_url = None
+        self._last_relogin_attempt = None
 
         # Validation stricte de la configuration AVANT démarrage. Une borne mal
         # configurée (fichier illisible, URL invalide, http distant en prod,
-        # identifiants USB erronés, secret/identifiants vides, mauvais types)
+        # identifiants USB erronés, secret vide, mauvais types)
         # REFUSE de démarrer et affiche la liste des problèmes, au lieu de
         # tourner avec une configuration partielle ou des valeurs par défaut
         # appliquées en douce.
@@ -126,15 +136,15 @@ class WebViewClient:
         # Validation de forme (URL/parseur, IDs USB, modèle, secrets, types).
         self._config_errors.extend(settings.validate())
 
-        # Garde-fou sécurité : identifiants triviaux (admin/admin, secret repris
-        # de l'exemple). Le code ne fournit AUCUN identifiant par défaut ; ceux
-        # détectés ici viennent donc de la configuration du poste. On REFUSE en
-        # production (accès triviaux) ; simple avertissement en debug.
+        # Garde-fou sécurité : secret applicatif trivial (vide ou repris de
+        # l'exemple). Le code ne fournit AUCUN secret par défaut ; celui
+        # détecté ici vient donc de la configuration du poste. On REFUSE en
+        # production (accès trivial) ; simple avertissement en debug.
         insecure = settings.insecure_credentials_reasons()
         if insecure:
             if settings.is_production:
                 self._config_errors.extend(
-                    f"{reason} Configurez des identifiants propres à cette borne "
+                    f"{reason} Configurez un secret propre à cette borne "
                     "(config-editor.py)." for reason in insecure)
             else:
                 for reason in insecure:
@@ -176,7 +186,11 @@ class WebViewClient:
             # borne reste non opérationnelle.
             content_kwargs = {'html': ui_assets.build_config_error_html(self._config_errors)}
         elif self.is_operational():
-            content_kwargs = {'url': f"{self.base_url}/patient"}
+            # Fenêtre créée APRÈS l'init (ex. init très rapide) : même chemin
+            # que _maybe_show_patient_page — l'URL signée du ticket, pas
+            # /patient directement (sinon redirection vers /login).
+            content_kwargs = {'url': self._patient_login_url
+                              or f"{self.base_url}/patient"}
             self._patient_page_shown = True
         else:
             content_kwargs = {'html': ui_assets.offline_html()}
@@ -284,6 +298,9 @@ class WebViewClient:
                     # ici, get_app_token n'ajoute donc pas sa propre attente.
                     self.get_app_token(max_retries=1)
                     self.initialize_printer()
+                    # Ticket de session borne : requis pour que la WebView
+                    # ouvre /patient quand SECURITY_LOGIN_PATIENT est actif.
+                    self._patient_login_url = self._fetch_patient_login_url()
                     self.start_token_refresh()
                     self.connected = True
                     self._set_operational(True)
@@ -339,7 +356,14 @@ class WebViewClient:
                 return
             self._patient_page_shown = True
         try:
-            self.window.load_url(f"{self.base_url}/patient")
+            # On navigue sur l'URL de connexion signée (ticket) plutôt que
+            # /patient directement : le serveur y pose le cookie de session
+            # borne puis redirige vers /patient. Si la sécurité patient est
+            # inactive, le mécanisme reste transparent (le ticket est accepté
+            # aussi).
+            if not self._patient_login_url:
+                raise SessionUnavailableError("aucun ticket de session obtenu")
+            self.window.load_url(self._patient_login_url)
         except Exception:
             # Frontière pywebview (le moteur peut lever selon le backend Qt) :
             # on annule le marquage pour qu'une tentative ultérieure soit
@@ -347,6 +371,52 @@ class WebViewClient:
             with self._operational_lock:
                 self._patient_page_shown = False
             logger.exception("Erreur lors du chargement de /patient.")
+
+    def _fetch_patient_login_url(self):
+        """Ticket de session borne : échange le jeton applicatif contre une URL
+        de connexion signée à courte durée de vie (/patient/kiosk_login/...).
+
+        Remplace l'ancienne connexion par formulaire : plus de compte
+        utilisateur ni de mot de passe injecté dans le DOM — seul le jeton
+        applicatif (déjà requis pour l'imprimante) sert d'identité machine.
+        Lève SessionUnavailableError (panne attendue) sur tout échec."""
+        try:
+            response = self.session.post(
+                f"{self.base_url}/api/kiosk/session_ticket",
+                headers={"X-App-Token": self.app_token},
+                timeout=NETWORK_TIMEOUT)
+        except RequestException as e:
+            raise SessionUnavailableError(
+                f"ticket de session injoignable : {e}") from e
+        if response.status_code != 200:
+            raise SessionUnavailableError(
+                f"ticket de session refusé (HTTP {response.status_code})")
+        try:
+            login_url = response.json()["login_url"]
+        except (ValueError, KeyError) as e:
+            raise SessionUnavailableError(
+                "ticket de session : réponse inattendue") from e
+        return f"{self.base_url}{login_url}"
+
+    def _recover_kiosk_session(self):
+        """La WebView a été redirigée vers /login : la session borne est
+        expirée ou invalidée (redémarrage serveur, rotation de clé…). On
+        redemande un ticket et on renavigue — borné à une tentative par
+        KIOSK_RELOGIN_MIN_INTERVAL pour ne pas marteler le serveur si l'échec
+        persiste."""
+        now = time.monotonic()
+        if (self._last_relogin_attempt is not None
+                and now - self._last_relogin_attempt < KIOSK_RELOGIN_MIN_INTERVAL):
+            logger.warning("Page de connexion affichée : ticket déjà redemandé "
+                           "il y a peu, on attend avant de réessayer.")
+            return
+        self._last_relogin_attempt = now
+        try:
+            self._patient_login_url = self._fetch_patient_login_url()
+        except SessionUnavailableError as e:
+            logger.warning("Impossible de renouveler la session borne : %s", e)
+            return
+        self.window.load_url(self._patient_login_url)
 
     def initialize_printer(self):
         """Initialise l'imprimante une fois le token obtenu"""
@@ -411,8 +481,12 @@ class WebViewClient:
         # Injecte le gestionnaire de touches
         self.inject_keyboard_handler()
 
-        if "login" in current_url:
-            self.inject_login_script()
+        # Page /login atteinte : la session borne est absente ou expirée (la
+        # route /patient/kiosk_login — qui CRÉE la session — ne doit PAS être
+        # confondue avec la page de connexion ; on compare le chemin exact).
+        if urlparse(current_url).path.rstrip('/') == '/login':
+            self._recover_kiosk_session()
+            return
 
         # Si l'utilisateur est redirigé vers la racine après authentification,
         # on recharge explicitement la page /patient
@@ -450,15 +524,6 @@ class WebViewClient:
         self.window.evaluate_js(ui_assets.kiosk_protection_script())
         self._protection_injected = True
 
-
-    def inject_login_script(self):
-        """Injecte et exécute le script de connexion automatique
-        (``assets/login.js``). Les identifiants sont sérialisés en littéraux
-        JSON par ui_assets.login_script AVANT insertion : un guillemet, un
-        antislash ou un saut de ligne dans le mot de passe ne peut donc ni
-        casser le script ni y injecter de code."""
-        self.window.evaluate_js(
-            ui_assets.login_script(self.username, self.password))
 
     def run(self):
         """Lance l'application"""

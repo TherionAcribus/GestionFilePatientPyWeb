@@ -14,22 +14,18 @@ import secret_store
 
 logger = logging.getLogger("borne.config")
 
-# --- Identifiants : AUCUNE valeur par défaut dans le code -------------------
-# Le code source ne fournit plus d'identifiants ni de secret utilisables : les
-# champs ``username``, ``password`` et ``app_secret`` naissent VIDES. Une borne
-# non configurée refuse donc de démarrer (``validate()`` signale les champs
-# vides) au lieu de tourner avec des accès triviaux hérités du dépôt.
+# --- Secret applicatif : AUCUNE valeur par défaut dans le code ---------------
+# La borne ne s'authentifie PLUS que par son identité machine (``app_secret``
+# -> jeton applicatif -> ticket de session patient, cf. main.py) : les champs
+# ``username``/``password`` du compte technique ont disparu. Une borne non
+# configurée refuse donc de démarrer (``validate()`` signale le secret vide)
+# au lieu de tourner avec un accès trivial hérité du dépôt.
 #
-# Les listes ci-dessous ne sont PAS des valeurs par défaut : ce sont des
-# DENYLISTS servant à refuser une borne encore configurée avec les valeurs
-# d'exemple historiques (installations existantes, tutoriels, copies de
-# settings.json). Elles ne contiennent que des valeurs publiquement connues,
-# donc sans valeur de secret.
-INSECURE_USERNAMES = frozenset({"", "admin", "administrateur", "administrator",
-                                "root", "user", "borne", "test"})
-INSECURE_PASSWORDS = frozenset({"", "admin", "administrateur", "password",
-                                "motdepasse", "borne", "test", "changeme",
-                                "123456", "1234"})
+# La liste ci-dessous n'est PAS une valeur par défaut : c'est une DENYLIST
+# servant à refuser une borne encore configurée avec les valeurs d'exemple
+# historiques (installations existantes, tutoriels, copies de settings.json).
+# Elle ne contient que des valeurs publiquement connues, donc sans valeur de
+# secret.
 INSECURE_APP_SECRETS = frozenset({"", "votre_secret_app", "changeme",
                                   "secret", "your_app_secret"})
 
@@ -63,11 +59,9 @@ class Settings:
     # maintenance à la souris. Même à True, le curseur réapparaît dès qu'une
     # souris est utilisée et se remasque au toucher suivant (cf. main.py).
     hide_cursor: bool = True
-    # Identifiants de la borne : VIDES par défaut (aucun identifiant livré dans
+    # Secret applicatif de la borne : VIDE par défaut (aucun secret livré dans
     # le code). À renseigner via config-editor.py ; la validation refuse le
-    # démarrage tant qu'ils ne le sont pas.
-    username: str = ""
-    password: str = ""
+    # démarrage tant qu'il ne l'est pas.
     printer_id_vendor: str = "0x04b8"
     printer_id_product: str = "0x0202"
     printer_model: str = "TM-T88II"
@@ -87,27 +81,20 @@ class Settings:
         return not self.debug
 
     def insecure_credentials_reasons(self) -> list:
-        """Liste des identifiants triviaux détectés (vide = rien à signaler).
+        """Liste des secrets triviaux détectés (vide = rien à signaler).
 
-        Compare la configuration aux DENYLISTS de valeurs publiquement connues
-        (valeurs d'exemple, mots de passe usuels) plutôt qu'aux « valeurs par
-        défaut du code », qui n'existent plus. La comparaison est insensible à
-        la casse et aux espaces de bordure : « Admin » ou « admin » sont aussi
-        triviaux l'un que l'autre."""
+        Compare la configuration à la DENYLIST de valeurs publiquement connues
+        (valeurs d'exemple, secrets usuels) plutôt qu'aux « valeurs par défaut
+        du code », qui n'existent pas. La comparaison est insensible à la casse
+        et aux espaces de bordure."""
         def _norm(value):
             # Les valeurs de mauvais type sont signalées par validate() ; ici on
-            # les ramène à la chaîne vide (elle-même dans les denylists).
+            # les ramène à la chaîne vide (elle-même dans la denylist).
             return value.strip().lower() if isinstance(value, str) else ""
 
         reasons = []
-        username = _norm(self.username)
-        password = _norm(self.password)
         app_secret = _norm(self.app_secret)
 
-        if username in INSECURE_USERNAMES and password in INSECURE_PASSWORDS:
-            reasons.append(
-                "Identifiants de session triviaux (nom d'utilisateur et mot de "
-                "passe usuels du type admin/admin).")
         if app_secret in INSECURE_APP_SECRETS:
             reasons.append(
                 "Secret d'application vide ou repris de l'exemple de "
@@ -115,9 +102,9 @@ class Settings:
         return reasons
 
     def has_insecure_default_credentials(self) -> bool:
-        """Vrai si des identifiants triviaux (admin/admin, secret d'exemple) sont
-        encore en place. À refuser en production (cf. main.py) pour ne pas
-        exposer une borne avec des accès triviaux."""
+        """Vrai si le secret d'application est trivial (vide ou repris de
+        l'exemple). À refuser en production (cf. main.py) pour ne pas exposer
+        une borne avec un accès trivial."""
         return bool(self.insecure_credentials_reasons())
 
     # ------------------------------------------------------------------
@@ -210,7 +197,7 @@ class Settings:
             if not isinstance(getattr(self, name), bool):
                 errors.append(f"Le champ « {name} » doit être un booléen (vrai/faux).")
         for name in (
-            "base_url", "username", "password", "printer_id_vendor",
+            "base_url", "printer_id_vendor",
             "printer_id_product", "printer_model", "app_secret", "borne_id",
         ):
             if not isinstance(getattr(self, name), str):
@@ -221,11 +208,7 @@ class Settings:
         # URL du serveur.
         errors.extend(self.base_url_errors())
 
-        # Authentification borne.
-        if isinstance(self.username, str) and not self.username.strip():
-            errors.append("Le nom d'utilisateur ne peut pas être vide.")
-        if isinstance(self.password, str) and self.password == "":
-            errors.append("Le mot de passe ne peut pas être vide.")
+        # Authentification borne : l'identité machine seule (secret applicatif).
         if isinstance(self.app_secret, str) and not self.app_secret.strip():
             errors.append("Le secret d'application ne peut pas être vide.")
 
@@ -322,9 +305,9 @@ class Config:
                                ', '.join(sorted(ignored)))
             filtered = {k: v for k, v in data.items() if k in known}
             self.settings = Settings(**filtered)
-            # Les secrets (password, app_secret) proviennent désormais du
-            # magasin sécurisé du système ; on migre au besoin une valeur
-            # héritée en clair puis on réécrit le fichier sans elle.
+            # Le secret (app_secret) provient désormais du magasin sécurisé du
+            # système ; on migre au besoin une valeur héritée en clair puis on
+            # réécrit le fichier sans elle.
             if self._apply_secret_store(data):
                 try:
                     self.save_settings()
@@ -377,8 +360,8 @@ class Config:
         et disque restent cohérents. Sans cet argument, on écrit ``self.settings``
         tel quel (usage interne : premier démarrage, migration des secrets).
 
-        Les secrets (``password``, ``app_secret``) ne sont **jamais** écrits en
-        clair : ils sont déplacés vers le magasin de secrets du système. On ne
+        Le secret (``app_secret``) n'est **jamais** écrit en
+        clair : il est déplacé vers le magasin de secrets du système. On ne
         retombe PAS silencieusement sur un stockage en clair (point 5) :
         - magasin disponible  -> secrets dans le magasin, champs vidés du JSON ;
         - indisponible, **production** -> ``SecretStoreUnavailableError`` (refus) ;

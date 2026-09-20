@@ -40,6 +40,13 @@ class PrinterNotReadyError(BorneError):
     authentifiés)."""
 
 
+class SessionUnavailableError(BorneError):
+    """Le serveur n'a pas délivré de ticket de session borne.
+
+    Panne attendue (serveur injoignable, jeton refusé, réponse inattendue) : la
+    boucle d'initialisation réessaie avec backoff, comme pour le token."""
+
+
 class PrintPayloadError(BorneError, ValueError):
     """Charge d'impression refusée par la validation (base64 invalide, ticket
     trop long, commande ESC/POS non autorisée...).

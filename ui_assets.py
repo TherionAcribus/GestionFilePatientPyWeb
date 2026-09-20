@@ -28,7 +28,6 @@ manquent). Tous ces replis sont JOURNALISÉS en erreur.
 """
 
 import html
-import json
 import logging
 import re
 from pathlib import Path
@@ -164,12 +163,7 @@ def keyboard_script() -> str:
     """Gestionnaire de touches (F11 = plein écran via le pont pywebview)."""
     return _script("keyboard.js")
 
-
-def login_script(username: str, password: str) -> str:
-    """Connexion automatique : les identifiants sont sérialisés en littéraux
-    JSON (``json.dumps``) AVANT insertion — ils ne peuvent donc pas casser le
-    script ni y injecter de code."""
-    return _script("login.js", {
-        "USERNAME_JSON": json.dumps(username),
-        "PASSWORD_JSON": json.dumps(password),
-    })
+# NOTE : le script de connexion automatique (assets/login.js) a été retiré :
+# la borne n'injecte plus d'identifiants dans le DOM. La session patient est
+# obtenue par ticket signé (/api/kiosk/session_ticket -> /patient/kiosk_login),
+# navigué directement par la WebView (voir main.py).

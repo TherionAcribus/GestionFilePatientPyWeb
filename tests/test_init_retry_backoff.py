@@ -20,7 +20,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
 
 import main
-from errors import TokenUnavailableError
+from errors import SessionUnavailableError, TokenUnavailableError
 
 
 def _bare_client():
@@ -107,6 +107,27 @@ def test_printer_failure_waits_too(fast_backoff):
     attempts = []
     client.initialize_printer = _fail_then_stop(
         client, attempts, PrinterNotReadyError("imprimante absente"))
+    client._fetch_patient_login_url = lambda: "http://x/patient/kiosk_login/t"
+    client.start_token_refresh = lambda: None
+    client._set_operational = lambda v: setattr(client, "operational", v)
+    delays = _spy_waits(client, 3)
+
+    client.start_initialization()
+    client._init_thread.join(timeout=5)
+
+    assert delays == [1, 2, 4]
+    assert len(attempts) == 3
+
+
+def test_session_ticket_failure_waits_too(fast_backoff):
+    """Token + imprimante OK mais ticket de session refusé : panne attendue,
+    même attente/backoff (sinon on martelerait /api/kiosk/session_ticket)."""
+    client = _bare_client()
+    client.get_app_token = lambda **_kw: True
+    client.initialize_printer = lambda: None
+    attempts = []
+    client._fetch_patient_login_url = _fail_then_stop(
+        client, attempts, SessionUnavailableError("ticket refusé"))
     client.start_token_refresh = lambda: None
     client._set_operational = lambda v: setattr(client, "operational", v)
     delays = _spy_waits(client, 3)
@@ -123,6 +144,7 @@ def test_success_stops_loop_without_any_wait(fast_backoff):
     client = _bare_client()
     client.get_app_token = lambda **_kw: True
     client.initialize_printer = lambda: None
+    client._fetch_patient_login_url = lambda: "http://x/patient/kiosk_login/t"
     client.start_token_refresh = lambda: None
     client._set_operational = lambda v: setattr(client, "operational", v)
     delays = _spy_waits(client, 10)

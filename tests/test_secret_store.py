@@ -51,31 +51,32 @@ def unavailable(monkeypatch):
     return calls
 
 
-def test_secret_fields_are_the_two_secrets():
-    assert set(SECRET_FIELDS) == {"password", "app_secret"}
+def test_secret_fields_are_the_app_secret_only():
+    # Le compte utilisateur (password) n'existe plus : seul le secret
+    # applicatif — identité machine de la borne — quitte settings.json.
+    assert set(SECRET_FIELDS) == {"app_secret"}
 
 
 def test_store_and_load_roundtrip(fake_store):
-    ok = store_secrets({"password": "pw", "app_secret": "sec"})
+    ok = store_secrets({"app_secret": "sec"})
     assert ok is True
-    assert fake_store == {"password": "pw", "app_secret": "sec"}
-    assert load_secrets() == {"password": "pw", "app_secret": "sec"}
+    assert fake_store == {"app_secret": "sec"}
+    assert load_secrets() == {"app_secret": "sec"}
 
 
 def test_store_secrets_returns_false_and_writes_nothing_when_unavailable(unavailable):
-    ok = store_secrets({"password": "pw", "app_secret": "sec"})
+    ok = store_secrets({"app_secret": "sec"})
     assert ok is False
     # available() False => on ne tente MÊME PAS d'écrire (pas de repli).
     assert unavailable["set"] == 0
 
 
 def test_load_secrets_omits_empty(fake_store):
-    fake_store["password"] = "pw"
     fake_store["app_secret"] = ""
-    assert load_secrets() == {"password": "pw"}
+    assert load_secrets() == {}
 
 
 def test_store_secrets_ignores_unknown_fields(fake_store):
-    store_secrets({"password": "pw", "not_a_secret": "x"})
+    store_secrets({"app_secret": "sec", "not_a_secret": "x"})
     assert "not_a_secret" not in fake_store
-    assert fake_store.get("password") == "pw"
+    assert fake_store.get("app_secret") == "sec"

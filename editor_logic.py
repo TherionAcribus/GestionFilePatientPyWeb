@@ -4,7 +4,7 @@
 Extraite du module d'interface (tkinter, non importable — son nom contient un
 tiret et sa construction nécessite un serveur graphique) afin d'être **testable**
 sans afficher de fenêtre : détection des changements non enregistrés et garde de
-sécurité sur les identifiants par défaut.
+sécurité sur le secret applicatif.
 
 Aucune dépendance à tkinter : ces fonctions ne manipulent que des dictionnaires
 de valeurs et des objets ``Settings``."""
@@ -25,11 +25,10 @@ def values_differ(loaded: dict, current: dict) -> bool:
 
 
 def default_credentials_error(settings: Settings):
-    """Message d'erreur si les identifiants triviaux sont interdits dans le
-    contexte courant, sinon ``None``.
+    """Message d'erreur si le secret trivial est interdit dans le contexte
+    courant, sinon ``None``.
 
-    Les identifiants triviaux (``admin``/``admin`` et autres valeurs usuelles,
-    secret d'application vide ou repris de l'exemple) sont REFUSÉS à
+    Le secret d'application trivial (vide ou repris de l'exemple) est REFUSÉ à
     l'enregistrement, sauf si le **mode développement est explicitement
     activé** — c'est-à-dire la case « Mode debug » cochée (``settings.debug``).
     En production (debug désactivé), on refuse pour ne pas déployer une borne
@@ -38,18 +37,18 @@ def default_credentials_error(settings: Settings):
     reasons = settings.insecure_credentials_reasons()
     if reasons and settings.is_production:
         return (
-            "Les identifiants de cette borne sont refusés hors mode "
+            "Le secret d'application de cette borne est refusé hors mode "
             "développement :\n\n- " + "\n- ".join(reasons) + "\n\n"
-            "Renseignez un nom d'utilisateur, un mot de passe et un secret "
-            "d'application propres à cette borne, ou activez explicitement le "
-            "mode debug (développement) pour enregistrer malgré tout."
+            "Renseignez un secret d'application propre à cette borne, ou "
+            "activez explicitement le mode debug (développement) pour "
+            "enregistrer malgré tout."
         )
     return None
 
 
 def default_credentials_warning(settings: Settings):
-    """Message d'avertissement (non bloquant) à mettre en évidence lorsque des
-    identifiants triviaux sont présents, sinon ``None``.
+    """Message d'avertissement (non bloquant) à mettre en évidence lorsqu'un
+    secret trivial est présent, sinon ``None``.
 
     - En production (debug désactivé) : l'enregistrement sera refusé.
     - En développement (debug activé) : accepté, mais à corriger avant

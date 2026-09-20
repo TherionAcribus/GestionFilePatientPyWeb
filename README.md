@@ -100,7 +100,9 @@ python config-editor.py
 L'éditeur **valide** la configuration avant d'enregistrer et propose deux
 diagnostics :
 
-- **Tester le serveur** : joignabilité + validité du secret d'application.
+- **Tester le serveur** : joignabilité + validité du secret d'application +
+  chemin de connexion borne (ticket de session → redirection vers `/patient`),
+  en une seule tentative bornée.
 - **Tester l'imprimante** : ouverture du périphérique USB (sans imprimer).
 
 ### 4.2 Champs
@@ -108,9 +110,7 @@ diagnostics :
 | Champ | Type | Description |
 |-------|------|-------------|
 | `base_url` | str | URL racine du serveur. **HTTP autorisé uniquement pour `localhost` ou en mode `debug`** ; un serveur distant doit être en **HTTPS**. |
-| `username` | str | Identifiant de session de la borne (non vide ; **vide par défaut**, le code ne livre aucun identifiant). |
-| `password` | str | Mot de passe de session (non vide ; **vide par défaut**). **Secret** : stocké dans le magasin du système, jamais en clair dans `settings.json` (cf. § 4.3). |
-| `app_secret` | str | Secret d'application (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.3). |
+| `app_secret` | str | Secret d'application — **identité machine** de la borne (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.3). Sert à obtenir le jeton applicatif, lui-même échangé contre un ticket de session signé (`/patient/kiosk_login/…`) — la borne n'a plus de compte utilisateur. |
 | `printer_id_vendor` | str | ID vendeur USB, hexadécimal (ex. `0x04b8`). |
 | `printer_id_product` | str | ID produit USB, hexadécimal (ex. `0x0202`). |
 | `printer_model` | str | Profil python-escpos (ex. `TM-T88II`). |
@@ -121,27 +121,29 @@ diagnostics :
 | `borne_id` | str | Identifiant de la borne joint aux statuts (vide = nom d'hôte). |
 
 > **Garde-fous** : la borne **refuse de démarrer** si la configuration est
-> invalide (URL/secret/identifiants USB/types) ou si des identifiants triviaux
-> (`admin/admin`, secret d'exemple) sont utilisés en production. L'écran
+> invalide (URL/secret/identifiants USB/types) ou si le secret d'application
+> est trivial (vide ou repris de l'exemple) en production. L'écran
 > d'erreur liste les problèmes.
 >
-> **Aucun identifiant n'est livré dans le code** : `username`, `password` et
-> `app_secret` naissent **vides**, donc une borne installée sans passer par
-> l'éditeur refuse de démarrer au lieu de tourner avec `admin/admin`. Les
-> valeurs usuelles (`admin`, `password`, secret d'exemple…) restent refusées en
-> production par une denylist, qui couvre les installations existantes.
+> **Aucun secret n'est livré dans le code** : `app_secret` naît **vide**, donc
+> une borne installée sans passer par l'éditeur refuse de démarrer au lieu de
+> tourner avec un accès trivial. Les valeurs usuelles (secret d'exemple…)
+> restent refusées en production par une denylist, qui couvre les
+> installations existantes.
 
-### 4.3 Stockage des secrets (`password`, `app_secret`)
+### 4.3 Stockage du secret (`app_secret`)
 
-Ces deux valeurs ne sont **jamais** écrites en clair dans `settings.json` : elles
-sont conservées dans le **gestionnaire de secrets du système** via `keyring`
+Cette valeur n'est **jamais** écrite en clair dans `settings.json` : elle est
+conservée dans le **gestionnaire de secrets du système** via `keyring`
 (Gestionnaire d'identifiants Windows, Trousseau macOS, Secret Service Linux).
-`settings.example.json` ne les contient donc plus ; renseignez-les via
+`settings.example.json` ne la contient donc pas ; renseignez-la via
 `config-editor.py`.
 
-- **Migration automatique** : si un ancien `settings.json` contient encore ces
-  valeurs en clair, elles sont déplacées vers le magasin sécurisé au premier
-  chargement, puis effacées du fichier.
+- **Migration automatique** : si un ancien `settings.json` contient encore
+  `app_secret` en clair, il est déplacé vers le magasin sécurisé au premier
+  chargement, puis effacé du fichier. Les clés supprimées (`username`,
+  `password` des versions avec compte utilisateur) sont ignorées puis
+  effacées à la réécriture.
 - **Pas de repli silencieux** : si aucun magasin sécurisé n'est disponible,
   l'enregistrement est **refusé en production** (mode `debug=false`) avec un
   message explicite ; en mode développement (`debug=true`), le repli en clair

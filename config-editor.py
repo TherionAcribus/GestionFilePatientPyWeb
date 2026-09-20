@@ -67,7 +67,7 @@ class ConfigEditor(tk.Tk):
 
         # Champs sensibles : masqués par défaut (points), avec une case
         # « Afficher » pour les révéler ponctuellement.
-        secret_fields = {"password", "app_secret"}
+        secret_fields = {"app_secret"}
 
         # Création des champs
         fields = [
@@ -83,8 +83,6 @@ class ConfigEditor(tk.Tk):
                 ("hide_cursor", "Masquer le curseur (mode kiosque):", bool),
             ]),
             ("Authentification", [
-                ("username", "Nom d'utilisateur:", str),
-                ("password", "Mot de passe:", str),
                 ("app_secret", "Secret de l'application:", str),
             ]),
             ("Imprimante", [
@@ -156,9 +154,9 @@ class ConfigEditor(tk.Tk):
 
                 row += 1
 
-        # Met en évidence le mode debug et les identifiants par défaut dès que
-        # l'un des champs concernés change (et une première fois au chargement).
-        for name in ("debug", "username", "password", "app_secret"):
+        # Met en évidence le mode debug et le secret par défaut dès que l'un
+        # des champs concernés change (et une première fois au chargement).
+        for name in ("debug", "app_secret"):
             self.variables[name].trace_add(
                 "write", lambda *a: self._refresh_security_highlights())
 
@@ -218,8 +216,8 @@ class ConfigEditor(tk.Tk):
     # Mise en évidence / fermeture / restauration
     # ------------------------------------------------------------------
     def _refresh_security_highlights(self):
-        """Affiche/masque le bandeau mettant en évidence le mode debug et les
-        identifiants par défaut, en fonction de la saisie courante."""
+        """Affiche/masque le bandeau mettant en évidence le mode debug et le
+        secret par défaut, en fonction de la saisie courante."""
         # Le label n'existe pas encore pendant la construction initiale.
         if not hasattr(self, "_security_label"):
             return
@@ -254,9 +252,8 @@ class ConfigEditor(tk.Tk):
         if not messagebox.askyesno(
                 "Restaurer les valeurs par défaut",
                 "Remplacer tous les champs par les valeurs par défaut ?\n\n"
-                "Les identifiants (nom d'utilisateur, mot de passe, secret "
-                "d'application) seront VIDÉS : le code ne fournit aucun "
-                "identifiant par défaut, vous devrez les ressaisir.\n\n"
+                "Le secret d'application sera VIDÉ : le code ne fournit aucun "
+                "secret par défaut, vous devrez le ressaisir.\n\n"
                 "Les modifications non enregistrées seront perdues. "
                 "L'enregistrement reste nécessaire pour appliquer les "
                 "changements."):
@@ -296,9 +293,9 @@ class ConfigEditor(tk.Tk):
                 + "\n- ".join(errors))
             return
 
-        # Garde-fou sécurité : refuse les identifiants/secret par défaut
-        # (admin/admin) hors mode développement explicitement activé (case
-        # « Mode debug »), en cohérence avec le refus de démarrage (main.py).
+        # Garde-fou sécurité : refuse le secret d'application par défaut hors
+        # mode développement explicitement activé (case « Mode debug »), en
+        # cohérence avec le refus de démarrage (main.py).
         cred_error = editor_logic.default_credentials_error(settings)
         if cred_error:
             messagebox.showerror("Identifiants par défaut refusés", cred_error)
@@ -354,8 +351,10 @@ class ConfigEditor(tk.Tk):
         threading.Thread(target=task, daemon=True).start()
 
     def test_server(self):
-        """Teste la joignabilité du serveur ET la validité du secret
-        d'application (obtention d'un token) avec l'URL/secret saisis."""
+        """Teste la joignabilité du serveur, la validité du secret d'application
+        ET le chemin de connexion de la borne (ticket de session -> redirection
+        signée vers /patient), avec l'URL/secret saisis. Une seule tentative
+        bornée par étape — pas de boucle de réessai."""
         try:
             settings = self._settings_from_form()
         except (TypeError, ValueError, tk.TclError) as e:
@@ -391,20 +390,57 @@ class ConfigEditor(tk.Tk):
         except RequestException as e:
             return False, f"Serveur injoignable :\n{e}"
 
-        if response.status_code == 200:
-            try:
-                token = response.json().get('token')
-            except ValueError:
-                token = None
-            if token:
-                return True, (f"Serveur joignable ({base_url}) et secret "
-                              "d'application valide.")
-            return False, "Serveur joignable mais réponse inattendue (aucun token)."
         if response.status_code in (401, 403):
             return False, (f"Serveur joignable mais secret d'application refusé "
                            f"(HTTP {response.status_code}).")
-        return False, (f"Serveur joignable mais réponse inattendue "
-                       f"(HTTP {response.status_code}).")
+        if response.status_code != 200:
+            return False, (f"Serveur joignable mais réponse inattendue "
+                           f"(HTTP {response.status_code}).")
+
+        try:
+            token = response.json().get('token')
+        except ValueError:
+            token = None
+        if not token:
+            return False, "Serveur joignable mais réponse inattendue (aucun token)."
+
+        # Étape 2 : échange du jeton contre un ticket de session borne — c'est
+        # le nouveau chemin de connexion (plus de compte utilisateur).
+        try:
+            ticket_resp = requests.post(
+                f"{base_url}/api/kiosk/session_ticket",
+                headers={"X-App-Token": token},
+                timeout=_TEST_TIMEOUT,
+            )
+        except RequestException as e:
+            return False, (f"Secret valide mais ticket de session injoignable :"
+                           f"\n{e}")
+        if ticket_resp.status_code != 200:
+            return False, (f"Secret valide mais ticket de session refusé "
+                           f"(HTTP {ticket_resp.status_code}).")
+        try:
+            login_url = ticket_resp.json().get('login_url')
+        except ValueError:
+            login_url = None
+        if not login_url:
+            return False, ("Ticket de session : réponse inattendue "
+                           "(aucune URL de connexion).")
+
+        # Étape 3 : la route de connexion doit rediriger vers /patient (cookie
+        # de session posé). Une seule tentative, sans suivre la redirection.
+        try:
+            login_resp = requests.get(
+                f"{base_url}{login_url}", timeout=_TEST_TIMEOUT,
+                allow_redirects=False)
+        except RequestException as e:
+            return False, f"Ticket obtenu mais connexion injoignable :\n{e}"
+        location = login_resp.headers.get('Location', '')
+        if login_resp.status_code in (301, 302, 303, 307, 308) and \
+                location.rstrip('/').endswith('/patient'):
+            return True, (f"Serveur joignable ({base_url}), secret valide et "
+                          "connexion borne fonctionnelle (ticket -> /patient).")
+        return False, (f"Ticket obtenu mais la connexion borne ne redirige pas "
+                       f"vers /patient (HTTP {login_resp.status_code}).")
 
     def test_printer(self):
         """Teste l'ouverture de l'imprimante USB avec les identifiants/modèle

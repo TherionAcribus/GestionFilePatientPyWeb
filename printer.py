@@ -61,6 +61,11 @@ class PrinterAPI:
     """API minimaliste pour PyWebView"""
     def __init__(self):
         self._print_callback = None
+        # borne_id : même calcul que Printer (settings.borne_id sinon nom
+        # d'hôte). Joint aux résultats de print_ticket pour que la page
+        # kiosque identifie la borne dans l'acquittement des tirages de
+        # test admin (print_test_result -> /socket_admin).
+        self._borne_id = Config().settings.borne_id or socket.gethostname()
 
     def set_print_callback(self, callback):
         """Définit la fonction de callback pour l'impression"""
@@ -70,29 +75,34 @@ class PrinterAPI:
         """Méthode exposée à JavaScript pour l'impression.
 
         Retourne toujours un dictionnaire au format unique
-        ``{'success': bool, 'code': str, 'message': str}``. Le callback
-        (Printer.print) respecte déjà ce contrat ; on ne fait que
-        garantir le même format pour les erreurs propres à l'API.
+        ``{'success': bool, 'code': str, 'message': str, 'borne_id': str}``.
+        Le callback (Printer.print) respecte déjà ce contrat ; on ne fait
+        que garantir le même format pour les erreurs propres à l'API et
+        joindre l'identifiant de la borne.
         """
         if self._print_callback:
             try:
-                return self._print_callback(print_data)
+                result = self._print_callback(print_data)
             except Exception as e:
                 # FRONTIÈRE (pont JavaScript) : la page kiosque attend TOUJOURS
                 # un dictionnaire. Une exception qui remonterait jusqu'à
                 # pywebview laisserait le ticket sans réponse. On journalise
                 # donc la trace complète et on renvoie le contrat d'erreur.
                 logger.exception("Erreur inattendue pendant l'impression.")
-                return {
+                result = {
                     'success': False,
                     'code': 'error_exception',
                     'message': f'Erreur d\'impression : {e!s}'
                 }
-        return {
-            'success': False,
-            'code': 'error_not_initialized',
-            'message': 'Système d\'impression non initialisé'
-        }
+        else:
+            result = {
+                'success': False,
+                'code': 'error_not_initialized',
+                'message': 'Système d\'impression non initialisé'
+            }
+        if isinstance(result, dict):
+            result.setdefault('borne_id', self._borne_id)
+        return result
 
 
 # Timeouts (connexion, lecture) en secondes pour les appels réseau de la borne.

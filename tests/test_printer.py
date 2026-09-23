@@ -197,9 +197,24 @@ def test_print_always_returns_dict_contract(monkeypatch):
 def test_api_forwards_callback_result():
     api = PrinterAPI()
     expected = {'success': True, 'code': 'print_ok', 'message': 'Ticket imprimé.'}
-    api.set_print_callback(lambda data: expected)
+    api.set_print_callback(lambda data: dict(expected))
 
-    assert api.print_ticket("payload") == expected
+    result = api.print_ticket("payload")
+    for key, value in expected.items():
+        assert result[key] == value
+
+
+def test_api_result_inclut_borne_id():
+    """L'acquittement des tirages de test admin identifie la borne
+    répondante : print_ticket joint toujours borne_id (settings ou nom
+    d'hôte), y compris sur les chemins d'erreur de l'API."""
+    api = PrinterAPI()
+    api.set_print_callback(lambda data: {'success': True, 'code': 'print_ok',
+                                         'message': 'ok'})
+
+    assert api.print_ticket("payload")['borne_id']
+    # Sans callback (imprimante non initialisée) : borne_id quand même.
+    assert PrinterAPI().print_ticket("payload")['borne_id']
 
 
 def test_api_not_initialized():

@@ -10,6 +10,7 @@ Cas couverts : succès, absence de papier, imprimante absente, données
 invalides, exception USB — plus les erreurs propres à l'API.
 """
 import base64
+import logging
 import queue
 import threading
 
@@ -192,16 +193,66 @@ def test_print_always_returns_dict_contract(monkeypatch):
     assert isinstance(result['success'], bool)
 
 
+def test_print_journalise_le_print_job_id_serveur(monkeypatch, caplog):
+    """Le print_job_id serveur devient le « job » des journaux : les lignes
+    d'une impression restent corrélables avec l'inscription et son
+    acquittement /patient/confirm_print."""
+    device = FakeDevice()
+    p = make_printer(device=device, check_paper=False, monkeypatch=monkeypatch)
+    with caplog.at_level(logging.INFO, logger="borne.printer"):
+        p.print(VALID_PAYLOAD, job_id="srv-job-123")
+    assert any(getattr(r, "job_id", None) == "srv-job-123"
+               for r in caplog.records)
+
+
+def test_print_sans_job_id_genere_un_identifiant_local(monkeypatch, caplog):
+    """Tirage hors parcours (test admin) : un identifiant local est généré
+    comme avant — les lignes du travail restent corrélées entre elles."""
+    device = FakeDevice()
+    p = make_printer(device=device, check_paper=False, monkeypatch=monkeypatch)
+    with caplog.at_level(logging.INFO, logger="borne.printer"):
+        p.print(VALID_PAYLOAD)
+    job_ids = {getattr(r, "job_id", None) for r in caplog.records}
+    assert None not in job_ids and len(job_ids) == 1
+
+
 # --- Tests PrinterAPI.print_ticket ----------------------------------------
 
 def test_api_forwards_callback_result():
     api = PrinterAPI()
     expected = {'success': True, 'code': 'print_ok', 'message': 'Ticket imprimé.'}
-    api.set_print_callback(lambda data: dict(expected))
+    api.set_print_callback(lambda data, job_id=None: dict(expected))
 
     result = api.print_ticket("payload")
     for key, value in expected.items():
         assert result[key] == value
+
+
+def test_api_transmet_le_print_job_id_au_callback():
+    """Le print_job_id serveur (clé de /patient/confirm_print) doit atteindre
+    le callback : c'est lui qui corrèle les journaux d'impression avec
+    l'inscription du patient."""
+    api = PrinterAPI()
+    seen = {}
+    api.set_print_callback(
+        lambda data, job_id=None: seen.update(job=job_id)
+        or {'success': True, 'code': 'print_ok', 'message': 'ok'})
+
+    api.print_ticket("payload", "job-serveur-123")
+    assert seen['job'] == "job-serveur-123"
+
+
+def test_api_sans_job_id_transmet_none():
+    """Tirage de test / appel historique : le callback reçoit None, pas
+    d'exception d'arité."""
+    api = PrinterAPI()
+    seen = {}
+    api.set_print_callback(
+        lambda data, job_id=None: seen.update(job=job_id)
+        or {'success': True, 'code': 'print_ok', 'message': 'ok'})
+
+    api.print_ticket("payload")
+    assert seen['job'] is None
 
 
 def test_api_result_inclut_borne_id():
@@ -209,7 +260,7 @@ def test_api_result_inclut_borne_id():
     répondante : print_ticket joint toujours borne_id (settings ou nom
     d'hôte), y compris sur les chemins d'erreur de l'API."""
     api = PrinterAPI()
-    api.set_print_callback(lambda data: {'success': True, 'code': 'print_ok',
+    api.set_print_callback(lambda data, job_id=None: {'success': True, 'code': 'print_ok',
                                          'message': 'ok'})
 
     assert api.print_ticket("payload")['borne_id']
@@ -230,7 +281,7 @@ def test_api_not_initialized():
 def test_api_callback_raises():
     api = PrinterAPI()
 
-    def boom(data):
+    def boom(data, job_id=None):
         raise RuntimeError("boom")
 
     api.set_print_callback(boom)

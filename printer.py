@@ -71,8 +71,14 @@ class PrinterAPI:
         """Définit la fonction de callback pour l'impression"""
         self._print_callback = callback
 
-    def print_ticket(self, print_data):
+    def print_ticket(self, print_data, print_job_id=None):
         """Méthode exposée à JavaScript pour l'impression.
+
+        ``print_job_id`` est l'identifiant d'inscription côté serveur — la
+        même clé que celle acquittée via ``/patient/confirm_print``. Transmis
+        au callback, il finit dans le ``job`` des journaux : chaque ligne de
+        log d'une impression reste corrélable avec l'inscription du patient.
+        Optionnel : les tirages de test admin n'ont pas d'inscription.
 
         Retourne toujours un dictionnaire au format unique
         ``{'success': bool, 'code': str, 'message': str, 'borne_id': str}``.
@@ -82,7 +88,7 @@ class PrinterAPI:
         """
         if self._print_callback:
             try:
-                result = self._print_callback(print_data)
+                result = self._print_callback(print_data, print_job_id)
             except Exception as e:
                 # FRONTIÈRE (pont JavaScript) : la page kiosque attend TOUJOURS
                 # un dictionnaire. Une exception qui remonterait jusqu'à
@@ -564,11 +570,15 @@ class Printer:
                 # les logs se rempliraient toutes les HEALTH_CHECK_INTERVAL s.
                 logger.debug("Réessai imprimante échoué: %s", e)
 
-    def print(self, data):
+    def print(self, data, job_id=None):
         # Identifiant de travail : corrèle toutes les lignes de log d'UNE même
         # impression (accepté -> succès/échec), sans jamais journaliser le
-        # contenu du ticket.
-        job_id = uuid.uuid4().hex[:8]
+        # contenu du ticket. Quand la page fournit le print_job_id serveur,
+        # c'est lui qui sert — même clé que /patient/confirm_print : la
+        # chaîne inscription -> impression -> acquittement est traçable
+        # bout à bout. Sans lui (tirage de test), un identifiant local est
+        # généré comme avant.
+        job_id = job_id or uuid.uuid4().hex[:8]
         log = logging.LoggerAdapter(logger, {'job_id': job_id})
 
         # Tout le chemin d'impression est sérialisé : une impression déclenchée

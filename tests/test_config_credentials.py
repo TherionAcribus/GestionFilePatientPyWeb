@@ -90,3 +90,29 @@ def test_wrong_types_do_not_crash_the_check():
 def test_denylist_is_not_empty():
     # Garde-fou : une denylist vidée par erreur désactiverait le garde-fou.
     assert "" in INSECURE_APP_SECRETS
+
+
+# --- URL serveur -------------------------------------------------------------
+
+def test_local_http_is_allowed_in_production():
+    settings = _settings(base_url="http://127.0.0.1:5000", debug=False)
+    assert settings.base_url_errors() == []
+
+
+def test_remote_http_is_refused_in_production():
+    settings = _settings(base_url="http://serveur.local:5000", debug=False)
+    errors = settings.base_url_errors()
+    assert any("HTTPS" in e.upper() for e in errors)
+
+
+def test_remote_http_is_allowed_only_in_development():
+    settings = _settings(base_url="http://serveur.local:5000", debug=True)
+    assert settings.base_url_errors() == []
+
+
+def test_invalid_url_and_port_are_rejected_before_startup():
+    settings = _settings(base_url="https://serveur.local:port-invalide")
+    assert settings.base_url_errors()
+
+    settings = _settings(base_url="serveur.local")
+    assert settings.base_url_errors()

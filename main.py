@@ -10,7 +10,7 @@ from requests.exceptions import RequestException
 
 import logging_config
 import ui_assets
-from config import Config
+from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
 from errors import BorneError, PrinterNotReadyError, SessionUnavailableError, TokenUnavailableError
 from printer import NETWORK_TIMEOUT, Printer, PrinterAPI, join_with_timeout
 
@@ -96,20 +96,21 @@ class WebViewClient:
         self.app_token = None
         self.printer = None
         self.connected = False
+        config = Config()
         # La borne ne connaît QUE son identité machine : le secret applicatif
         # (jeton) suffit — plus de compte utilisateur ni de mot de passe à
         # injecter dans la page de connexion.
         # Masque le secret d'application dans TOUS les logs (défense en
         # profondeur : même si un message le contenait par erreur).
-        logging_config.register_secret(Config().settings.app_secret)
+        logging_config.register_secret(config.settings.app_secret)
         # URL normalisée par un parseur (schéma/hôte en minuscules, sans slash
         # final). On NE force PLUS silencieusement http -> https : le schéma
         # configuré est respecté, et la validation ci-dessous n'autorise http
         # que pour localhost ou en mode développement. Une URL http vers un
         # serveur distant en production est donc REFUSÉE au démarrage plutôt que
         # réécrite en douce (ce qui masquait les erreurs de configuration).
-        self.base_url = Config().settings.normalized_base_url()
-        self.is_fullscreen = Config().settings.fullscreen
+        self.base_url = config.settings.normalized_base_url()
+        self.is_fullscreen = config.settings.fullscreen
 
         # Ajout des configurations d'optimisation
         self.webview_settings = {
@@ -154,12 +155,21 @@ class WebViewClient:
         # appliquées en douce.
         self._config_error = False
         self._config_errors = []
-        settings = Config().settings
+        settings = config.settings
 
         # Fichier de configuration illisible (JSON invalide, etc.) : signalé par
         # Config au lieu d'un repli silencieux sur les valeurs par défaut.
-        if Config().load_error:
-            self._config_errors.append(Config().load_error)
+        if config.load_error:
+            self._config_errors.append(config.load_error)
+
+        # Un secret en clair non migrable est toléré seulement en développement :
+        # en production, la borne refuse de tourner avec une copie qui resterait
+        # lisible dans settings.json.
+        if config.secret_store_error:
+            if settings.is_production:
+                self._config_errors.append(config.secret_store_error)
+            else:
+                logger.warning("%s", config.secret_store_error)
 
         # Validation de forme (URL/parseur, IDs USB, modèle, secrets, types).
         self._config_errors.extend(settings.validate())
@@ -236,6 +246,9 @@ class WebViewClient:
         # Ajout des gestionnaires d'événements
         self.window.events.loaded += self.on_loaded
         self.window.events.loaded += lambda: self.disable_context_menu_and_cursor()
+        # Installé avant l'évènement « shown » : le profil Qt existe alors, et
+        # toutes les navigations/redirections suivantes passent par l'allowlist.
+        self.window.events.before_show += self._install_navigation_guard
         # La fenêtre est prête : on peut désormais naviguer vers /patient si la
         # borne est (ou devient) opérationnelle.
         self.window.events.shown += self._on_window_shown
@@ -453,10 +466,18 @@ class WebViewClient:
         except (ValueError, KeyError) as e:
             raise SessionUnavailableError(
                 "ticket de session : réponse inattendue") from e
-        parsed = urlparse(login_url)
-        if parsed.scheme and parsed.netloc:
-            return login_url
-        return f"{self.base_url.rstrip('/')}/{login_url.lstrip('/')}"
+        try:
+            resolved_url = resolve_server_url(self.base_url, login_url)
+        except ValueError as e:
+            raise SessionUnavailableError(
+                "ticket de session hors du domaine applicatif autorisé") from e
+        # Défense en profondeur : si cette URL ou son ticket apparaissent un
+        # jour dans une exception ou un message non prévu, ils seront remplacés
+        # par *** (les journaux normaux utilisent déjà redact_url_for_log).
+        logging_config.register_secret(resolved_url)
+        logging_config.register_secret(
+            urlparse(resolved_url).path.rsplit('/', 1)[-1])
+        return resolved_url
 
     def _recover_kiosk_session(self):
         """La WebView a été redirigée vers /login : la session borne est
@@ -520,7 +541,7 @@ class WebViewClient:
         except Exception:
             logger.exception("Lecture de l'URL WebView impossible.")
             current_url = None
-        if current_url and current_url.startswith(self.base_url):
+        if current_url and url_is_within_base(current_url, self.base_url):
             return
 
         now = time.monotonic()
@@ -528,7 +549,8 @@ class WebViewClient:
                 and now - self._last_page_recovery_attempt < PATIENT_PAGE_RECOVERY_INTERVAL):
             return
         self._last_page_recovery_attempt = now
-        logger.warning("Page patient absente (%r), récupération de session.", current_url)
+        logger.warning("Page patient absente (%s), récupération de session.",
+                       redact_url_for_log(current_url))
         try:
             self._patient_login_url = self._fetch_patient_login_url()
         except SessionUnavailableError as e:
@@ -587,6 +609,71 @@ class WebViewClient:
             return None
 
 
+    def _navigation_request_allowed(self, url):
+        """Politique de navigation réseau de la WebView.
+
+        Toutes les requêtes HTTP(S)/WebSocket doivent rester dans l'origine et
+        le préfixe de ``base_url``. Les schémas locaux nécessaires à la page
+        hors ligne (``about:blank``) ou aux ressources inline (``data:``,
+        ``blob:``) restent acceptés ; ``file:``, ``javascript:`` et les autres
+        schémas sont bloqués."""
+        try:
+            parsed = urlparse(url)
+        except (TypeError, ValueError):
+            return False
+        scheme = (parsed.scheme or "").lower()
+        if scheme in ("http", "https", "ws", "wss"):
+            return url_is_within_base(url, self.base_url)
+        if (url or "").lower().startswith("about:blank"):
+            return True
+        return scheme in ("data", "blob")
+
+    def _install_navigation_guard(self):
+        """Installe le garde-navigation sur le profil Qt WebEngine.
+
+        pywebview expose les requêtes à l'application, mais ne fournit pas de
+        mécanisme d'autorisation. On encapsule donc son intercepteur Qt : les
+        requêtes hors ``base_url`` sont bloquées, tandis que les requêtes
+        autorisées continuent d'appeler l'implémentation d'origine (évènement
+        ``request_sent`` et éventuels ajustements d'en-têtes)."""
+        try:
+            native = getattr(self.window, "native", None)
+            interceptor = getattr(native, "request_interceptor", None)
+            profile = getattr(native, "profile", None)
+        except Exception:
+            return
+        if interceptor is None or profile is None:
+            return
+
+        client = self
+
+        class GuardedRequestInterceptor(type(interceptor)):
+            def interceptRequest(self, info):
+                try:
+                    url = info.requestUrl().toString()
+                except Exception:
+                    return super().interceptRequest(info)
+                if not client._navigation_request_allowed(url):
+                    logger.warning(
+                        "Navigation hors domaine bloquée : %s",
+                        redact_url_for_log(url))
+                    try:
+                        info.block(True)
+                    except Exception:
+                        logger.exception(
+                            "Blocage d'une navigation externe impossible.")
+                    return None
+                return super().interceptRequest(info)
+
+        try:
+            guarded = GuardedRequestInterceptor(self.window)
+            profile.setUrlRequestInterceptor(guarded)
+            # Conserver une référence Python comme le fait pywebview : sinon
+            # l'objet peut être collecté alors que Qt en détient le pointeur.
+            native.request_interceptor = guarded
+        except Exception:
+            logger.exception("Installation du garde-navigation impossible.")
+
     def _on_window_shown(self):
         """La fenêtre est affichée (boucle GUI démarrée) : on marque la fenêtre
         prête et on charge /patient si la borne est déjà opérationnelle."""
@@ -596,14 +683,15 @@ class WebViewClient:
     def on_loaded(self):
         """Gestionnaire d'événement pour le chargement de la page"""
         current_url = self.window.get_current_url()
-        logger.debug("Page chargée : %s", current_url)
+        logger.debug("Page chargée : %s", redact_url_for_log(current_url))
 
         # L'écran local « Borne hors ligne » (chargé via html=) gère lui-même sa
         # présentation ; les injections kiosque ne concernent que les pages
-        # servies par le serveur. On les saute donc tant qu'on n'est pas sur une
-        # URL du serveur. Les scripts sont idempotents : ils sont réinjectés à
-        # chaque navigation, car chaque chargement repart d'un contexte JS neuf.
-        if not (current_url or '').startswith(self.base_url):
+        # servies par le serveur. On les saute donc tant qu'on n'est pas dans le
+        # périmètre strict de base_url (origine + port + préfixe, pas simple
+        # préfixe de chaîne). Les scripts sont idempotents : ils sont réinjectés
+        # à chaque navigation, car chaque chargement repart d'un contexte JS neuf.
+        if not url_is_within_base(current_url or "", self.base_url):
             return
 
         self.inject_pywebview_bridge()
@@ -664,6 +752,18 @@ class WebViewClient:
             config = Config()
             logger.info("Fenêtre créée, démarrage de l'interface (fullscreen=%s).",
                         config.settings.fullscreen)
+            # Mode kiosque : ne jamais sortir vers le navigateur système ni
+            # autoriser une page servie à atteindre le système de fichiers local.
+            # Les clés existent dans pywebview 6 ; les ignorer silencieusement si
+            # une version future les renomme.
+            for key, value in (
+                ("OPEN_EXTERNAL_LINKS_IN_BROWSER", False),
+                ("ALLOW_FILE_URLS", False),
+            ):
+                try:
+                    webview.settings[key] = value
+                except (AttributeError, KeyError, TypeError):
+                    logger.debug("Réglage WebView indisponible : %s", key)
             webview.start(
                 debug=config.settings.debug,
                 gui="qt",

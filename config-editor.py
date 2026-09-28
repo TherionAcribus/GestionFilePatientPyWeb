@@ -8,7 +8,7 @@ from tkinter import messagebox, ttk
 
 import editor_logic
 import logging_config
-from config import Config, Settings
+from config import Config, Settings, resolve_server_url
 
 logger = logging.getLogger("borne.editor")
 
@@ -425,15 +425,23 @@ class ConfigEditor(tk.Tk):
         if not login_url:
             return False, ("Ticket de session : réponse inattendue "
                            "(aucune URL de connexion).")
+        try:
+            login_target = resolve_server_url(base_url, login_url)
+        except ValueError:
+            return False, ("Ticket obtenu mais le serveur a renvoyé une URL de "
+                           "connexion hors du domaine applicatif autorisé.")
 
         # Étape 3 : la route de connexion doit rediriger vers /patient (cookie
         # de session posé). Une seule tentative, sans suivre la redirection.
         try:
             login_resp = requests.get(
-                f"{base_url}{login_url}", timeout=_TEST_TIMEOUT,
+                login_target, timeout=_TEST_TIMEOUT,
                 allow_redirects=False)
-        except RequestException as e:
-            return False, f"Ticket obtenu mais connexion injoignable :\n{e}"
+        except RequestException:
+            # Ne pas reprendre le texte de l'exception : requests peut y inclure
+            # l'URL signée, donc le ticket de session.
+            return False, ("Ticket obtenu mais connexion borne injoignable "
+                           "(vérifiez le réseau et le serveur).")
         location = login_resp.headers.get('Location', '')
         if login_resp.status_code in (301, 302, 303, 307, 308) and \
                 location.rstrip('/').endswith('/patient'):

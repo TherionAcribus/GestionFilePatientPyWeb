@@ -110,9 +110,9 @@ def test_fetch_login_url_preserves_absolute_and_prefixed_urls():
 
     client = _bare_client()
     client.session = _FakeSession(_FakeResponse(
-        200, {"login_url": "https://srv.example/patient/kiosk_login/ticket"}))
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/ticket"}))
     assert client._fetch_patient_login_url() == (
-        "https://srv.example/patient/kiosk_login/ticket")
+        "http://127.0.0.1:5000/patient/kiosk_login/ticket")
 
 
 def test_fetch_login_url_refuses_non_200():
@@ -231,7 +231,7 @@ def test_page_watchdog_recovers_dead_page_with_fresh_ticket():
     window = _FakeWindow("about:blank")
     client.window = window
     session = _FakeSession(_FakeResponse(
-        200, {"login_url": "https://srv/secure?token=watchdog"}))
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/watchdog"}))
     client.session = session
 
     client._recover_patient_page()
@@ -240,9 +240,11 @@ def test_page_watchdog_recovers_dead_page_with_fresh_ticket():
         "url": "http://127.0.0.1:5000/api/kiosk/session_ticket",
         "headers": {"X-App-Token": "token-appli"},
     }]
-    assert window.loaded_urls == ["https://srv/secure?token=watchdog"]
+    assert window.loaded_urls == [
+        "http://127.0.0.1:5000/patient/kiosk_login/watchdog"]
     assert client._patient_page_shown is True
-    assert client._patient_login_url == "https://srv/secure?token=watchdog"
+    assert client._patient_login_url == (
+        "http://127.0.0.1:5000/patient/kiosk_login/watchdog")
 
 
 def test_page_watchdog_keeps_server_page_and_login_untouched():

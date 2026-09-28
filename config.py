@@ -1,14 +1,16 @@
 # config.py
+import contextlib
 import json
 import logging
 import os
 import platform
+import posixpath
 import re
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 import secret_store
 
@@ -47,6 +49,136 @@ def _host_is_local(host: str) -> bool:
         return True
     # Toute la plage de bouclage 127.0.0.0/8.
     return host.startswith("127.")
+
+
+def _normalized_url_path(path: str) -> str:
+    """Chemin URL normalisé pour les comparaisons de préfixe.
+
+    ``posixpath.normpath`` retire les segments ``.``/``..`` qui permettraient
+    sinon d'échapper au préfixe du serveur (``/app/../admin``). ``unquote``
+    couvre la variante encodée (``%2e%2e``, ``%2f``)."""
+    try:
+        decoded = unquote(path or "/")
+    except Exception:
+        decoded = path or "/"
+    normalized = posixpath.normpath(decoded)
+    if normalized == ".":
+        normalized = "/"
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized
+
+
+def _effective_port(parsed) -> int | None:
+    """Port effectif d'une URL (port explicite ou port standard du schéma)."""
+    try:
+        if parsed.port is not None:
+            return parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme in ("https", "wss"):
+        return 443
+    if parsed.scheme in ("http", "ws"):
+        return 80
+    return None
+
+
+def url_is_within_base(url: str, base_url: str) -> bool:
+    """Vrai si ``url`` reste sous l'origine et le préfixe de ``base_url``.
+
+    Utilisé à la fois pour la navigation WebView et pour les URL renvoyées par
+    le serveur. Une comparaison naïve de chaîne accepterait des hôtes ambigus
+    (``https://serveur@evil/``) ou des préfixes proches (``/app`` vs
+    ``/application``) ; on compare donc schéma, hôte, port effectif et chemin
+    normalisé. WebSocket est assimilé à son schéma HTTP correspondant."""
+    try:
+        candidate = urlparse(url)
+        base = urlparse(base_url)
+        if not candidate.scheme or not base.scheme:
+            return False
+        candidate_scheme = candidate.scheme.lower()
+        base_scheme = base.scheme.lower()
+        allowed_schemes = {base_scheme}
+        if base_scheme == "http":
+            allowed_schemes.add("ws")
+        elif base_scheme == "https":
+            allowed_schemes.add("wss")
+        if candidate_scheme not in allowed_schemes:
+            return False
+        if candidate.username is not None or candidate.password is not None:
+            return False
+        if (candidate.hostname or "").lower() != (base.hostname or "").lower():
+            return False
+        if _effective_port(candidate) != _effective_port(base):
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    base_path = _normalized_url_path(base.path)
+    candidate_path = _normalized_url_path(candidate.path)
+    if base_path == "/":
+        return True
+    return candidate_path == base_path or candidate_path.startswith(base_path + "/")
+
+
+def resolve_server_url(base_url: str, url: str) -> str:
+    """Résout une URL renvoyée par le serveur contre ``base_url``.
+
+    Les chemins relatifs sont rattachés au préfixe configuré ; les URL absolues
+    ne sont acceptées que si elles restent dans le même périmètre. Toute autre
+    valeur (domaine externe, ``javascript:``, ``file:``, référence
+    protocole-relative ``//host``) est refusée par ``ValueError``."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("URL de connexion vide ou invalide")
+    candidate = url.strip()
+    try:
+        parsed = urlparse(candidate)
+    except ValueError as e:
+        raise ValueError("URL de connexion invalide") from e
+
+    if parsed.scheme or parsed.netloc:
+        if url_is_within_base(candidate, base_url):
+            return candidate
+        raise ValueError("URL de connexion hors du domaine applicatif autorisé")
+    if candidate.startswith("//"):
+        raise ValueError("URL de connexion externe refusée")
+
+    resolved = f"{base_url.rstrip('/')}/{candidate.lstrip('/')}"
+    if not url_is_within_base(resolved, base_url):
+        raise ValueError("URL de connexion hors du domaine applicatif autorisé")
+    return resolved
+
+
+def redact_url_for_log(url: str) -> str:
+    """Version journalisable d'une URL : hôte et chemin utiles, jamais de
+    ticket, de requête ni de fragment.
+
+    Les tickets de session sont portés par ``/patient/kiosk_login/<ticket>`` ;
+    ils sont remplacés par ``***``. Les paramètres de requête sont toujours
+    omis car ils peuvent contenir des jetons."""
+    if not isinstance(url, str) or not url:
+        return "<aucune URL>"
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "<URL invalide>"
+
+    scheme = parsed.scheme.lower()
+    path = parsed.path or ""
+    marker = "/kiosk_login/"
+    if marker in path:
+        prefix = path.split(marker, 1)[0]
+        path = f"{prefix}{marker}***"
+    elif path.endswith("/kiosk_login"):
+        path = f"{path}/***"
+
+    if scheme in ("http", "https", "ws", "wss"):
+        return urlunparse((scheme, parsed.netloc, path, "", "", ""))
+    if scheme == "about":
+        return f"about:{path or 'blank'}"
+    if scheme:
+        return f"{scheme}:***"
+    return "<URL non absolue>"
 
 
 @dataclass
@@ -232,15 +364,29 @@ class Config:
         return cls._instance
 
     def _initialize(self):
-        """Initialise les attributs de l'instance"""
+        """Initialise les attributs de l'instance sans laisser une exception de
+        chemin rendre l'objet partiellement utilisable.
+
+        Si le répertoire applicatif ne peut pas être déterminé ou créé, on
+        conserve des valeurs par défaut en mémoire et on remplit ``load_error`` :
+        la borne refusera de démarrer proprement au lieu de planter avant même
+        l'affichage de l'écran de diagnostic."""
         self.app_name = "FileAttente"
-        self.config_path = self._get_config_path()
-        self._ensure_config_dir()
-        self.settings = None
-        # Renseigné si le fichier de configuration existe mais est illisible :
-        # la borne REFUSE alors de démarrer (main.py) au lieu de tourner en
-        # douce avec les valeurs par défaut (cf. load_settings).
+        self.settings = Settings()
         self.load_error = None
+        self.secret_store_error = None
+        try:
+            self.config_path = self._get_config_path()
+            self._ensure_config_dir()
+        except Exception as e:
+            logger.exception("Répertoire de configuration indisponible.")
+            self.config_path = Path(tempfile.gettempdir()) / self.app_name
+            with contextlib.suppress(Exception):
+                self._ensure_config_dir()
+            self.load_error = (
+                "Répertoire de configuration indisponible : "
+                f"{e}")
+            return
         self.load_settings()
 
     def _get_config_path(self) -> Path:
@@ -248,8 +394,11 @@ class Config:
         system = platform.system()
 
         if system == "Windows":
-            # Sur Windows, utilise AppData/Local
-            base_path = os.path.join(os.environ["LOCALAPPDATA"], self.app_name)
+            # LOCALAPPDATA peut être absent dans certains contextes de service ;
+            # retomber alors explicitement sur le profil utilisateur.
+            local_appdata = os.environ.get(
+                "LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
+            base_path = os.path.join(local_appdata, self.app_name)
         elif system == "Linux":
             # Sur Linux, utilise ~/.config
             base_path = os.path.join(str(Path.home()), ".config", self.app_name)
@@ -340,27 +489,48 @@ class Config:
         - Si une valeur est présente dans le magasin, elle prime.
         - Sinon, une valeur héritée en clair dans ``raw_data`` (fichier JSON) est
           migrée vers le magasin lorsque c'est possible.
+        - Toute copie en clair obsolète (``app_secret`` ou ancien ``password``)
+          doit déclencher une réécriture filtrée du fichier, même si le magasin
+          contient déjà la valeur retenue.
 
-        Renvoie ``True`` si une migration a eu lieu (le fichier doit alors être
-        réécrit pour effacer la copie en clair). Ne journalise jamais de valeur."""
-        migrated = False
+        Renvoie ``True`` si le fichier doit être réécrit. Ne journalise jamais
+        de valeur. Si la migration d'un secret en clair échoue, la valeur reste
+        disponible pour l'éditeur mais ``secret_store_error`` est rempli afin
+        que la borne refuse de démarrer en production."""
+        self.secret_store_error = None
         raw = raw_data if isinstance(raw_data, dict) else {}
+        needs_rewrite = bool(raw.get("password"))
         for name in secret_store.SECRET_FIELDS:
             stored = secret_store.get_secret(name)
+            legacy = raw.get(name) or ""
             if stored:
                 setattr(self.settings, name, stored)
+                if legacy:
+                    needs_rewrite = True
+                    logger.info(
+                        "Copie en clair de « %s » supprimée au profit du "
+                        "magasin sécurisé.", name)
                 continue
-            legacy = raw.get(name) or ""
             if legacy:
                 if secret_store.set_secret(name, legacy):
-                    migrated = True
                     logger.info(
                         "Secret « %s » migré du fichier vers le magasin sécurisé.",
                         name)
+                else:
+                    self.secret_store_error = (
+                        "Le secret d'application est présent en clair dans "
+                        "settings.json et n'a pas pu être déplacé vers le "
+                        "magasin sécurisé du système.")
+                    logger.warning(
+                        "Secret « %s » en clair non migrable : magasin "
+                        "sécurisé indisponible ou écriture refusée.", name)
+                # Réécriture nécessaire dans tous les cas : elle filtrera aussi
+                # les anciennes clés héritées lorsqu'elle est possible.
+                needs_rewrite = True
                 # Valeur conservée en mémoire pour la session en cours, que la
                 # migration ait réussi ou non.
                 setattr(self.settings, name, legacy)
-        return migrated
+        return needs_rewrite
 
     def save_settings(self, new_settings=None):
         """Sauvegarde les paramètres dans le fichier JSON, de façon **atomique**.

@@ -123,6 +123,78 @@ def test_keyring_value_takes_priority_over_file(store):
 
     cfg = Config()
     assert cfg.settings.app_secret == "secret-keyring"
+    # Le fichier doit être réécrit même si la valeur du magasin prime : une
+    # copie en clair obsolète (et un ancien mot de passe) ne doit pas rester.
+    data = _read_json(tmp_path)
+    assert data["app_secret"] == ""
+    assert "username" not in data
+    assert "password" not in data
+
+
+def test_legacy_password_is_removed_when_keyring_has_secret(store):
+    """Ancien fichier où seul le mot de passe hérité reste en clair."""
+    tmp_path = store["_path"]
+    store["app_secret"] = "secret-keyring"
+    data = _legacy_file(app_secret="")
+    data["password"] = "ancien-mot-de-passe"
+    with open(tmp_path / "settings.json", "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+    cfg = Config()
+
+    assert cfg.settings.app_secret == "secret-keyring"
+    written = _read_json(tmp_path)
+    assert "password" not in written
+
+
+def test_unavailable_store_marks_plaintext_secret_as_an_error(store, monkeypatch):
+    """Migration impossible : garder le secret en mémoire pour l'éditeur, mais
+    signaler explicitement qu'il reste en clair (refus en production)."""
+    tmp_path = store["_path"]
+    monkeypatch.setattr(secret_store, "available", lambda: False)
+    monkeypatch.setattr(secret_store, "set_secret", lambda name, value: False)
+    monkeypatch.setattr(secret_store, "get_secret", lambda name: "")
+    with open(tmp_path / "settings.json", "w", encoding="utf-8") as f:
+        json.dump(_legacy_file(app_secret="secret-en-clair"), f)
+
+    cfg = Config()
+
+    assert cfg.settings.app_secret == "secret-en-clair"
+    assert cfg.secret_store_error is not None
+    assert "secret-en-clair" not in cfg.secret_store_error
+
+
+def test_config_path_failure_is_reported_instead_of_crashing(monkeypatch, tmp_path):
+    """Un dossier de configuration inaccessible ne doit pas faire échouer
+    ``Config()`` : l'objet reste utilisable et l'erreur refuse le démarrage."""
+    Config._instance = None
+
+    def _unavailable(_self):
+        raise OSError("dossier de configuration inaccessible")
+
+    monkeypatch.setattr(config_mod.Config, "_get_config_path", _unavailable)
+    monkeypatch.setattr(secret_store, "available", lambda: True)
+    monkeypatch.setattr(secret_store, "get_secret", lambda name: "")
+    monkeypatch.setattr(secret_store, "set_secret", lambda name, value: True)
+
+    cfg = Config()
+
+    assert cfg.load_error is not None
+    assert cfg.settings is not None
+
+
+def test_windows_config_path_survives_missing_localappdata(monkeypatch, tmp_path):
+    Config._instance = None
+    monkeypatch.setattr(config_mod.platform, "system", lambda: "Windows")
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(config_mod.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(secret_store, "available", lambda: True)
+    monkeypatch.setattr(secret_store, "get_secret", lambda name: "")
+    monkeypatch.setattr(secret_store, "set_secret", lambda name, value: True)
+
+    cfg = Config()
+
+    assert cfg.config_path == tmp_path / "AppData" / "Local" / "FileAttente"
 
 
 def test_production_refuses_cleartext_when_store_unavailable(store, monkeypatch):

@@ -759,6 +759,11 @@ class WebViewClient:
             for key, value in (
                 ("OPEN_EXTERNAL_LINKS_IN_BROWSER", False),
                 ("ALLOW_FILE_URLS", False),
+                # debug=True ouvre sinon une seconde fenêtre « Web Inspector »
+                # (BrowserView 'web_inspector') : tant qu'elle reste ouverte,
+                # closeEvent n'appelle pas _app.exit() et le processus ne se
+                # termine jamais après la fermeture de la fenêtre principale.
+                ("OPEN_DEVTOOLS_IN_DEBUG", False),
             ):
                 try:
                     webview.settings[key] = value

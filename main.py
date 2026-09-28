@@ -578,9 +578,14 @@ class WebViewClient:
             os.environ['WEBKIT_DISABLE_COMPOSITING_MODE'] = '1'
             os.environ['WEBKIT_FORCE_ACCELERATED_COMPOSITING'] = '1'
             self.create_window()
+            config = Config()
             logger.info("Fenêtre créée, démarrage de l'interface (fullscreen=%s).",
-                        Config().settings.fullscreen)
-            webview.start(debug=Config().settings.debug, gui="qt")
+                        config.settings.fullscreen)
+            webview.start(
+                debug=config.settings.debug,
+                gui="qt",
+                private_mode=False,
+                storage_path=config.webview_storage_path())
         finally:
             logger.info("Arrêt de la borne.")
             # Réveil immédiat des boucles de fond, puis attente BORNÉE de leur

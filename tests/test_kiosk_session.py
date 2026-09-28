@@ -253,3 +253,41 @@ def test_run_page_script_falls_back_to_evaluate_js():
     client._run_page_script("window.x = 1")
 
     assert client.window.scripts == ["window.x = 1"]
+
+
+def test_run_uses_persistent_webview_storage(monkeypatch, tmp_path):
+    """localStorage porte les acquittements d'impression : la WebView ne doit
+    pas repartir en mode privé à chaque démarrage de la borne."""
+    storage_path = tmp_path / "webview-profile"
+
+    class _Settings:
+        fullscreen = False
+        debug = False
+
+    class _Config:
+        settings = _Settings()
+
+        def webview_storage_path(self):
+            return str(storage_path)
+
+    starts = []
+    monkeypatch.setattr(main, "Config", lambda: _Config())
+    monkeypatch.setattr(
+        main.webview, "start", lambda **kwargs: starts.append(kwargs), raising=False)
+
+    client = _bare_client()
+    client.create_window = lambda: None
+    client._init_stop = threading.Event()
+    client._token_refresh_stop = threading.Event()
+    client._init_thread = None
+    client._token_refresh_thread = None
+    client.printer = None
+
+    client.run()
+
+    assert starts == [{
+        "debug": False,
+        "gui": "qt",
+        "private_mode": False,
+        "storage_path": str(storage_path),
+    }]

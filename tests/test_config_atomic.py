@@ -14,6 +14,7 @@ config en tmp, magasin de secrets en mémoire disponible).
 
 import json
 import os
+import stat
 import sys
 
 import pytest
@@ -50,6 +51,18 @@ def _new_settings(**overrides):
                 "printer_model": "TM-T88II"}
     base.update(overrides)
     return Settings(**base)
+
+
+def test_webview_storage_path_is_persistent_and_private(store):
+    tmp_path = store["_path"]
+    cfg = Config()
+
+    storage_path = cfg.webview_storage_path()
+
+    assert storage_path == str(tmp_path / "webview")
+    assert (tmp_path / "webview").is_dir()
+    if os.name != "nt":
+        assert stat.S_IMODE((tmp_path / "webview").stat().st_mode) == 0o700
 
 
 def test_no_leftover_temp_file_after_success(store):

@@ -262,6 +262,18 @@ class Config:
         """Crée le répertoire de configuration s'il n'existe pas"""
         self.config_path.mkdir(parents=True, exist_ok=True)
 
+    def webview_storage_path(self) -> str:
+        """Répertoire persistant du profil WebView (cookies et localStorage)."""
+        storage_path = self.config_path / "webview"
+        storage_path.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(storage_path, 0o700)
+        except OSError as e:
+            logger.warning(
+                "Impossible de restreindre les permissions de %s: %s",
+                storage_path, e)
+        return str(storage_path)
+
     def load_settings(self):
         """Charge les paramètres depuis le fichier JSON.
 

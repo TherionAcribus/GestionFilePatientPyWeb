@@ -467,14 +467,15 @@ class ConfigEditor(tk.Tk):
 
     def _probe_printer(self, id_vendor, id_product, model):
         try:
-            from printer import CustomUsb
+            from printer import USB_IO_TIMEOUT_MS, CustomUsb
         except ImportError as e:
             return False, ("Module d'impression (python-escpos) indisponible dans "
                            f"cet éditeur :\n{e}")
         printer = None
         try:
             printer = CustomUsb(
-                int(id_vendor, 16), int(id_product, 16), profile=model)
+                int(id_vendor, 16), int(id_product, 16), profile=model,
+                timeout=USB_IO_TIMEOUT_MS)
             # Créer l'objet ne suffit pas : open() localise puis configure le
             # périphérique. La surcharge CustomUsb rend l'échec fatal au lieu
             # de le limiter à un log.

@@ -23,6 +23,9 @@ from errors import PrinterNotReadyError, PrintPayloadError  # noqa: F401 (réexp
 logger = logging.getLogger("borne.printer")
 status_logger = logging.getLogger("borne.status")
 
+# Timeout des transferts USB en millisecondes (unité attendue par pyusb).
+USB_IO_TIMEOUT_MS = 3000
+
 
 class CustomUsb(Usb):
     def _configure_usb(self):
@@ -40,6 +43,15 @@ class CustomUsb(Usb):
             self.device.reset()
         except (usb.core.USBError, NotImplementedError) as e:
             logger.warning("Réinitialisation USB non confirmée : %s", e)
+
+    def _read(self):
+        """Lit la réponse USB avec le même timeout borné que les écritures.
+
+        ``python-escpos`` transmet bien ``timeout`` à ``device.write``, mais
+        l'omet dans ``Usb._read`` : une imprimante qui ne répond pas pouvait
+        donc garder le verrou indéfiniment."""
+        assert self.device
+        return self.device.read(self.in_ep, 16, self.timeout)
 
     def query_status(self, mode):
         """
@@ -71,7 +83,9 @@ def _default_device_factory(id_vendor, id_product, printer_model):
     matériel — les tests injectent une fabrique renvoyant une fausse imprimante
     exposant ``open()``, ``text()``, ``cut()``, ``paper_status()`` et
     ``close()`` (voir ``Printer(device_factory=...)``)."""
-    return CustomUsb(id_vendor, id_product, profile=printer_model)
+    return CustomUsb(
+        id_vendor, id_product, profile=printer_model,
+        timeout=USB_IO_TIMEOUT_MS)
 
 
 class PrinterAPI:
@@ -150,6 +164,11 @@ STATUS_BACKOFF_MAX = 30.0
 # l'attente, on journalise le thread récalcitrant, et on continue l'arrêt — ces
 # threads sont démons, l'interpréteur ne les attendra pas.
 THREAD_JOIN_TIMEOUT = 5
+
+# Attente maximale pour obtenir le verrou sérialisant les accès USB. Une
+# opération matérielle bloquée ne doit plus empêcher indéfiniment une
+# impression suivante ou la fermeture de la borne.
+USB_LOCK_TIMEOUT = 10.0
 
 
 def join_with_timeout(thread, label, timeout=None):
@@ -509,12 +528,37 @@ class Printer:
             raise
         return device
 
+    @contextlib.contextmanager
+    def _usb_access(self, timeout=None):
+        """Acquisition bornée du verrou USB.
+
+        ``with self._usb_lock`` attendait indéfiniment : une écriture ou une
+        ouverture bloquée figeait alors toutes les opérations suivantes, y
+        compris ``cleanup()``. L'appelant décide de l'erreur métier quand
+        ``acquired`` est faux."""
+        if timeout is None:
+            timeout = USB_LOCK_TIMEOUT
+        acquired = self._usb_lock.acquire(timeout=timeout)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                self._usb_lock.release()
+
     def initialize_printer(self):
         """Ouvre réellement l'imprimante. Renvoie ``True`` si le handle USB est
         utilisable, ``False`` après une absence/panne gérée."""
         # Ouverture USB sérialisée : jamais concurrente d'une impression ou d'une
         # tentative de reconnexion par le thread de santé.
-        with self._usb_lock:
+        with self._usb_access() as acquired:
+            if not acquired:
+                logger.warning(
+                    "Initialisation imprimante impossible : verrou USB occupé "
+                    "depuis plus de %ss.", USB_LOCK_TIMEOUT)
+                self.error = True
+                self.send_printer_status(
+                    'error_init', "Imprimante occupée par une autre opération.")
+                return False
             # Repart d'un état propre : si un ancien handle traîne (reconnexion),
             # on le ferme avant d'en ouvrir un nouveau.
             self._close_printer()
@@ -573,8 +617,13 @@ class Printer:
         """Après une erreur USB matérielle (débranchement, pipe cassé...), ferme
         le handle et marque l'imprimante en erreur. Le thread de santé se
         chargera de rouvrir la connexion au prochain passage."""
-        with self._usb_lock:
-            self._close_printer()
+        with self._usb_access() as acquired:
+            if acquired:
+                self._close_printer()
+            else:
+                logger.warning(
+                    "Réinitialisation USB différée : verrou occupé depuis plus "
+                    "de %ss.", USB_LOCK_TIMEOUT)
             self.error = True
 
     def _health_loop(self):
@@ -594,7 +643,12 @@ class Printer:
     def _try_reconnect(self):
         """Réessaie d'ouvrir l'imprimante si elle n'est pas connectée. Ne fait
         rien tant qu'un handle valide existe."""
-        with self._usb_lock:
+        with self._usb_access() as acquired:
+            if not acquired:
+                logger.warning(
+                    "Réessai de connexion USB différé : verrou occupé depuis "
+                    "plus de %ss.", USB_LOCK_TIMEOUT)
+                return
             if self.p is not None:
                 return
             try:
@@ -628,7 +682,19 @@ class Printer:
         # statut/santé imprimante (vérification papier, reconnexion USB) ne
         # peuvent pas toucher en même temps le handle USB. Le second attend le
         # premier au lieu d'entrelacer octets et découpes.
-        with self._usb_lock:
+        with self._usb_access() as acquired:
+            if not acquired:
+                log.error(
+                    "Impression refusée : verrou USB occupé depuis plus de %ss.",
+                    USB_LOCK_TIMEOUT)
+                self.error = True
+                self.send_printer_status(
+                    'error_print', "Imprimante occupée par une autre opération.")
+                return {
+                    'success': False,
+                    'code': 'error_print',
+                    'message': "Imprimante occupée, réessayez dans un instant."
+                }
             if self.p is None:
                 log.error("Impression impossible : imprimante non initialisée.")
                 self.error = True
@@ -735,8 +801,10 @@ class Printer:
             except Exception as e:
                 # Frontière matérielle : tout ce que la pile USB/escpos peut
                 # lever hors USBError/ValueError. Trace complète (un type
-                # inattendu ici peut révéler un bogue), réponse contractuelle.
+                # inattendu ici peut révéler un bogue), puis le handle est
+                # invalidé pour permettre la reconnexion.
                 log.exception("Erreur inattendue lors de l'impression.")
+                self._reset_connection()
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
                 return {
                     'success': False,
@@ -788,9 +856,16 @@ class Printer:
         self._closing.set()
         if self._health_thread:
             join_with_timeout(self._health_thread, "santé imprimante")
-        # Fermeture propre du handle USB.
-        with self._usb_lock:
-            self._close_printer()
+        # Fermeture propre du handle USB, sans jamais attendre indéfiniment un
+        # accès bloqué : les threads concernés sont démons et le processus doit
+        # pouvoir se terminer.
+        with self._usb_access(timeout=THREAD_JOIN_TIMEOUT) as acquired:
+            if acquired:
+                self._close_printer()
+            else:
+                logger.warning(
+                    "Fermeture USB sans libération du verrou après %ss ; arrêt "
+                    "poursuivi.", THREAD_JOIN_TIMEOUT)
         if self.status_thread:
             self.status_thread.stop()
             join_with_timeout(self.status_thread, "statut imprimante")
@@ -803,7 +878,16 @@ class Printer:
         logger.debug("Vérification du papier")
         # Accès USB sérialisé (verrou réentrant : ok si déjà détenu par print()
         # ou initialize_printer()).
-        with self._usb_lock:
+        with self._usb_access() as acquired:
+            if not acquired:
+                logger.warning(
+                    "Vérification papier impossible : verrou USB occupé depuis "
+                    "plus de %ss.", USB_LOCK_TIMEOUT)
+                self.error = True
+                self.send_printer_status(
+                    "error_paper_check",
+                    "Vérification papier impossible : imprimante occupée")
+                return 'paper_check_error'
             if self.p is None:
                 self.send_printer_status("error_init", "Imprimante non initialisée")
                 return None

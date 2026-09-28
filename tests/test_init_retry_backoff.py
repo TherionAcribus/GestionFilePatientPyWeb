@@ -155,3 +155,54 @@ def test_success_stops_loop_without_any_wait(fast_backoff):
     assert delays == []
     assert client.operational is True
     assert client.connected is True
+
+
+def test_initialize_printer_reuses_existing_manager(monkeypatch):
+    """Régression A04 : une nouvelle tentative ne doit pas empiler un Printer
+    et ses threads de santé/statut à chaque échec ultérieur."""
+    created = []
+
+    class _Settings:
+        printer_id_vendor = "0x04b8"
+        printer_id_product = "0x0202"
+        printer_model = "TM-T88II"
+
+    class _Config:
+        settings = _Settings()
+
+    class _Printer:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.tokens = []
+            created.append(self)
+
+        def update_token(self, token):
+            self.tokens.append(token)
+
+        def print(self, *_args, **_kwargs):
+            return {"success": True}
+
+    class _PrinterAPI:
+        def __init__(self):
+            self.callback = None
+
+        def set_print_callback(self, callback):
+            self.callback = callback
+
+    monkeypatch.setattr(main, "Config", lambda: _Config())
+    monkeypatch.setattr(main, "Printer", _Printer)
+
+    client = _bare_client()
+    client.app_token = "token-1"
+    client.base_url = "http://127.0.0.1:5000"
+    client.printer = None
+    client.printer_api = _PrinterAPI()
+
+    client.initialize_printer()
+    client.app_token = "token-2"
+    client.initialize_printer()
+
+    assert len(created) == 1
+    assert created[0].tokens == ["token-2"]
+    assert client.printer_api.callback == created[0].print

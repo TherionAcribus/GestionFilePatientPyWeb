@@ -467,8 +467,12 @@ class WebViewClient:
         self.window.load_url(self._patient_login_url)
 
     def initialize_printer(self):
-        """Initialise l'imprimante une fois le token obtenu"""
-        if self.app_token:
+        """Initialise ou réutilise le gestionnaire d'imprimante."""
+        if not self.app_token:
+            raise PrinterNotReadyError(
+                "Tentative d'initialisation de l'imprimante sans token "
+                "d'application")
+        if self.printer is None:
             self.printer = Printer(
                 Config().settings.printer_id_vendor,
                 Config().settings.printer_id_product,
@@ -477,12 +481,14 @@ class WebViewClient:
                 self.app_token,
                 token_refresh_callback=self._refresh_app_token_for_printer
             )
-            # Une fois l'imprimante initialisée, on la passe à l'API
-            self.printer_api.set_print_callback(self.printer.print)
         else:
-            raise PrinterNotReadyError(
-                "Tentative d'initialisation de l'imprimante sans token "
-                "d'application")
+            # Une nouvelle tentative après un échec ultérieur (ticket de
+            # session, par exemple) ne doit pas empiler des gestionnaires et
+            # leurs threads de santé/statut : le même Printer reste propriétaire
+            # du périphérique et ne reçoit que le token renouvelé.
+            self.printer.update_token(self.app_token)
+        # Une fois l'imprimante initialisée, on la passe à l'API
+        self.printer_api.set_print_callback(self.printer.print)
 
     def _refresh_app_token_for_printer(self):
         """Renouvelle le token à la demande du thread de statut imprimante (ex:

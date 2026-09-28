@@ -84,6 +84,46 @@ def test_join_with_timeout_gives_up_and_warns(caplog):
         thread.join(timeout=2)
 
 
+def test_cleanup_does_not_wait_indefinitely_for_usb_lock(monkeypatch):
+    """Même si une opération matérielle garde le verrou, cleanup() doit rendre
+    la main : on renonce à close() plutôt que bloquer l'arrêt de la borne."""
+    class Device:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    printer = printer_module.Printer.__new__(printer_module.Printer)
+    device = Device()
+    printer.p = device
+    printer._usb_lock = threading.RLock()
+    printer._closing = threading.Event()
+    printer._health_thread = None
+    printer.status_thread = None
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_usb_lock():
+        printer._usb_lock.acquire()
+        locked.set()
+        release.wait(2)
+        printer._usb_lock.release()
+
+    holder = threading.Thread(target=hold_usb_lock, daemon=True)
+    holder.start()
+    assert locked.wait(1)
+    monkeypatch.setattr(printer_module, "THREAD_JOIN_TIMEOUT", 0.05)
+    try:
+        printer.cleanup()
+    finally:
+        release.set()
+        holder.join(timeout=1)
+
+    assert printer._closing.is_set()
+    assert device.close_calls == 0
+
+
 def test_cleanup_does_not_hang_on_a_stuck_status_thread(monkeypatch):
     """Régression du point 4 : avec un ``join()`` sans timeout, cleanup() ne
     rendait jamais la main si le thread de statut restait bloqué."""

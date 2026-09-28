@@ -187,6 +187,50 @@ def test_print_usb_exception(monkeypatch):
     assert 'USB pipe error' in result['message']
 
 
+def test_print_unexpected_error_invalidates_handle(monkeypatch):
+    """Une exception non-USBError peut tout de même laisser un handle mort :
+    on le ferme pour permettre la reconnexion par le gestionnaire de santé."""
+    device = FakeDevice(text_exc=RuntimeError("backend bloqué"))
+    p = make_printer(device=device, check_paper=False, monkeypatch=monkeypatch)
+
+    result = p.print(VALID_PAYLOAD)
+
+    assert result['success'] is False
+    assert result['code'] == 'error_print'
+    assert device.close_calls == 1
+    assert p.p is None
+    assert p.error is True
+
+
+def test_print_times_out_instead_of_waiting_for_stuck_usb(monkeypatch):
+    """Un accès USB qui ne rend pas le verrou ne doit plus figer l'API
+    d'impression : l'appel échoue de façon bornée et contractuelle."""
+    device = FakeDevice()
+    p = make_printer(device=device, check_paper=False, monkeypatch=monkeypatch)
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_usb_lock():
+        p._usb_lock.acquire()
+        locked.set()
+        release.wait(2)
+        p._usb_lock.release()
+
+    holder = threading.Thread(target=hold_usb_lock, daemon=True)
+    holder.start()
+    assert locked.wait(1)
+    monkeypatch.setattr(printer_module, 'USB_LOCK_TIMEOUT', 0.05)
+    try:
+        result = p.print(VALID_PAYLOAD)
+    finally:
+        release.set()
+        holder.join(timeout=1)
+
+    assert result['success'] is False
+    assert result['code'] == 'error_print'
+    assert device.text_calls == []
+
+
 def test_print_usb_langid_permission(monkeypatch):
     # ValueError contenant "langid" => problème de permissions USB.
     device = FakeDevice(text_exc=ValueError("The device has no langid"))
@@ -513,6 +557,41 @@ def test_unknown_paper_status_blocks_print(monkeypatch):
     assert result['success'] is False
     assert result['code'] == 'error_paper_check'
     assert fake.text_calls == []
+
+
+def test_default_factory_bounds_usb_io_timeout(monkeypatch):
+    """Le vrai périphérique reçoit un timeout : les appels pyusb ne doivent pas
+    être créés avec le timeout=0 (infini) par défaut de python-escpos."""
+    created = {}
+
+    class Device:
+        def __init__(self, *args, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setattr(printer_module, 'CustomUsb', Device)
+
+    printer_module._default_device_factory(0x04b8, 0x0202, 'TM-T88II')
+
+    assert created['timeout'] == printer_module.USB_IO_TIMEOUT_MS
+
+
+def test_custom_usb_read_uses_timeout():
+    """Usb._read d'origine ignore self.timeout : la surcharge le transmet."""
+    class Device:
+        def __init__(self):
+            self.calls = []
+
+        def read(self, endpoint, size, timeout):
+            self.calls.append((endpoint, size, timeout))
+            return b'ready'
+
+    custom = printer_module.CustomUsb.__new__(printer_module.CustomUsb)
+    custom.device = Device()
+    custom.in_ep = 0x82
+    custom.timeout = 1234
+
+    assert custom._read() == b'ready'
+    assert custom.device.calls == [(0x82, 16, 1234)]
 
 
 def test_custom_usb_requires_set_configuration():

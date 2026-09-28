@@ -185,6 +185,9 @@ def test_print_usb_exception(monkeypatch):
     assert result['success'] is False
     assert result['code'] == 'error_print'
     assert 'USB pipe error' in result['message']
+    # L'exception a pu survenir après des octets déjà envoyés : le serveur ne
+    # doit pas l'interpréter comme « aucun ticket ».
+    assert result['maybe_printed'] is True
 
 
 def test_print_unexpected_error_invalidates_handle(monkeypatch):
@@ -197,6 +200,7 @@ def test_print_unexpected_error_invalidates_handle(monkeypatch):
 
     assert result['success'] is False
     assert result['code'] == 'error_print'
+    assert result['maybe_printed'] is True
     assert device.close_calls == 1
     assert p.p is None
     assert p.error is True
@@ -228,6 +232,8 @@ def test_print_times_out_instead_of_waiting_for_stuck_usb(monkeypatch):
 
     assert result['success'] is False
     assert result['code'] == 'error_print'
+    assert result['attempted'] is False
+    assert result['maybe_printed'] is True
     assert device.text_calls == []
 
 
@@ -349,6 +355,20 @@ def test_api_callback_raises():
     assert result['success'] is False
     assert result['code'] == 'error_exception'
     assert 'boom' in result['message']
+    assert result['maybe_printed'] is True
+
+
+def test_api_resultat_non_dict_devient_incertain():
+    """Un callback qui renvoie autre chose qu'un dict a pu imprimer avant :
+    le résultat exposé au serveur reste ambigu, jamais un échec « sûr »."""
+    api = PrinterAPI()
+    api.set_print_callback(lambda data, job_id=None: None)
+
+    result = api.print_ticket("payload")
+
+    assert result['success'] is False
+    assert result['code'] == 'invalid_result'
+    assert result['maybe_printed'] is True
 
 
 # --- Tests validation stricte des données d'impression ---------------------

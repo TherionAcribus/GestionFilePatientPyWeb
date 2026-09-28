@@ -112,7 +112,8 @@ class PrinterAPI:
         Optionnel : les tirages de test admin n'ont pas d'inscription.
 
         Retourne toujours un dictionnaire au format unique
-        ``{'success': bool, 'code': str, 'message': str, 'borne_id': str}``.
+        ``{'success': bool, 'code': str, 'message': str, 'borne_id': str}``,
+        avec ``maybe_printed`` lorsque le résultat matériel est incertain.
         Le callback (Printer.print) respecte déjà ce contrat ; on ne fait
         que garantir le même format pour les erreurs propres à l'API et
         joindre l'identifiant de la borne.
@@ -129,7 +130,10 @@ class PrinterAPI:
                 result = {
                     'success': False,
                     'code': 'error_exception',
-                    'message': f'Erreur d\'impression : {e!s}'
+                    'message': f'Erreur d\'impression : {e!s}',
+                    # Une exception du callback peut survenir après le premier
+                    # octet envoyé : le serveur ne doit pas annuler aveuglément.
+                    'maybe_printed': True,
                 }
         else:
             result = {
@@ -137,8 +141,17 @@ class PrinterAPI:
                 'code': 'error_not_initialized',
                 'message': 'Système d\'impression non initialisé'
             }
-        if isinstance(result, dict):
-            result.setdefault('borne_id', self._borne_id)
+        if not isinstance(result, dict):
+            # Le callback a pu imprimer avant de renvoyer une valeur invalide :
+            # on expose un résultat incertain au lieu de laisser une valeur
+            # inattendue traverser le pont JavaScript.
+            result = {
+                'success': False,
+                'code': 'invalid_result',
+                'message': "Résultat d'impression invalide.",
+                'maybe_printed': True,
+            }
+        result.setdefault('borne_id', self._borne_id)
         return result
 
 
@@ -693,7 +706,11 @@ class Printer:
                 return {
                     'success': False,
                     'code': 'error_print',
-                    'message': "Imprimante occupée, réessayez dans un instant."
+                    'message': "Imprimante occupée, réessayez dans un instant.",
+                    # L'appel concurrent qui tient le verrou peut être celui
+                    # de ce print_job_id : résultat physique inconnu.
+                    'attempted': False,
+                    'maybe_printed': True,
                 }
             if self.p is None:
                 log.error("Impression impossible : imprimante non initialisée.")
@@ -773,7 +790,10 @@ class Printer:
                 return {
                     'success': False,
                     'code': 'error_print',
-                    'message': f"Erreur USB lors de l'impression : {e}"
+                    'message': f"Erreur USB lors de l'impression : {e}",
+                    # text() envoie les octets immédiatement : une erreur USB
+                    # (y compris pendant cut()) peut laisser un ticket imprimé.
+                    'maybe_printed': True,
                 }
 
             except ValueError as e:
@@ -788,14 +808,16 @@ class Printer:
                     return {
                         'success': False,
                         'code': 'error_grant',
-                        'message': "Erreur de permissions USB. Vérifiez les droits d'accès."
+                        'message': "Erreur de permissions USB. Vérifiez les droits d'accès.",
+                        'maybe_printed': True,
                     }
                 log.exception("Erreur lors de l'impression (valeur invalide).")
                 self.send_printer_status('error_print', f"Erreur lors de l'impression : {e}")
                 return {
                     'success': False,
                     'code': 'error_print',
-                    'message': f"Erreur lors de l'impression : {e}"
+                    'message': f"Erreur lors de l'impression : {e}",
+                    'maybe_printed': True,
                 }
 
             except Exception as e:
@@ -809,7 +831,8 @@ class Printer:
                 return {
                     'success': False,
                     'code': 'error_print',
-                    'message': f"Erreur lors de l'impression : {e}"
+                    'message': f"Erreur lors de l'impression : {e}",
+                    'maybe_printed': True,
                 }
 
 

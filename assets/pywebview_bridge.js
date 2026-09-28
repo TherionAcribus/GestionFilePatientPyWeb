@@ -53,6 +53,10 @@
     window.pywebview.api.printer.print_ticket = function(printData, printJobId) {
         return invoke('printer.print_ticket', arguments);
     };
+    // Capacité déclarée explicitement : la page ne doit JAMAIS rejouer un
+    // appel après une erreur pour détecter l'arité — une erreur postérieure à
+    // l'envoi pourrait déjà avoir imprimé le ticket.
+    window.pywebview.api.printer.print_ticket.supportsPrintJobId = true;
 
     window.pywebview.api.window = window.pywebview.api.window || {};
     window.pywebview.api.window.toggle_fullscreen = function() {

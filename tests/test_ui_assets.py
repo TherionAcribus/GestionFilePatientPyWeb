@@ -94,6 +94,8 @@ def test_scripts_are_idempotent_guarded():
     assert "_contextMenuDisabled" in ui_assets.kiosk_input_script(True)
     assert "_kioskProtected" in ui_assets.kiosk_protection_script()
     assert "__bornePywebviewBridge" in ui_assets.pywebview_bridge_script()
+    # La capacité print_job_id est déclarée sans rejeu d'appel après erreur.
+    assert "supportsPrintJobId = true" in ui_assets.pywebview_bridge_script()
 
 
 def test_keyboard_script_binds_f11():

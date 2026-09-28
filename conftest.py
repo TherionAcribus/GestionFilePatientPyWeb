@@ -60,7 +60,11 @@ def _install_usb_stub():
     class USBError(Exception):
         pass
 
+    class NoBackendError(ValueError):
+        pass
+
     core_mod.USBError = USBError
+    core_mod.NoBackendError = NoBackendError
     usb.core = core_mod
 
     sys.modules['usb'] = usb

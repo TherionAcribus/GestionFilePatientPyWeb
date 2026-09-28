@@ -497,6 +497,9 @@ class Printer:
         # doit pas produire une ligne SQL toutes les HEALTH_CHECK_INTERVAL.
         self._last_status_signature = None
         self.is_paper_ok = True
+        # Avertissement « backend USB absent » déjà émis (déduplication : le
+        # gestionnaire de santé retente l'ouverture en boucle).
+        self._no_backend_warned = False
 
         # Verrou SÉRIALISANT tous les accès USB (ouverture, impression, contrôle
         # papier, fermeture). Réentrant car print() appelle check_paper_status()
@@ -606,6 +609,21 @@ class Printer:
                 self.send_printer_status('init_ok', "Imprimante USB initialisée avec succès.")
                 self.error = False
                 logger.info("Imprimante USB initialisée avec succès (état USB: connectée).")
+            except usb.core.NoBackendError:
+                # Aucune pile USB exploitable (libusb absente) : état NORMAL
+                # sur un poste sans imprimante ; dépendance manquante sur une
+                # borne — à distinguer d'une imprimante débranchée. Le gestionnaire
+                # de santé réessaiera : un seul avertissement suffit.
+                self.p = None
+                self.error = True
+                if not self._no_backend_warned:
+                    self._no_backend_warned = True
+                    logger.warning(
+                        "Aucun backend USB disponible (libusb absente) : "
+                        "impression désactivée sur ce poste.")
+                self.send_printer_status(
+                    'error_init', "Backend USB indisponible (libusb absente).")
+                return False
             except DeviceNotFoundError as e:
                 logger.warning("Imprimante USB non trouvée (état USB: absente) : %s", e)
                 self.p = None

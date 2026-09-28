@@ -171,6 +171,12 @@ HEALTH_CHECK_INTERVAL = 10
 STATUS_BACKOFF_START = 1.0
 STATUS_BACKOFF_MAX = 30.0
 
+# Signal de vie de la borne : sans envoi périodique, un statut « imprimante OK »
+# très ancien est indistinguible d'une borne éteinte ou injoignable côté admin.
+# L'envoi est léger et le serveur met à jour le dernier contact sans empiler de
+# lignes identiques.
+STATUS_HEARTBEAT_INTERVAL = 60
+
 # Attente maximale (secondes) accordée à un thread de fond pour se terminer à la
 # fermeture. Un `join()` SANS timeout figerait l'arrêt de la borne si le thread
 # était bloqué (ex. envoi HTTP au timeout réseau maximal) : on borne donc
@@ -313,7 +319,8 @@ def decode_and_validate_print_payload(data, encoding='utf-8'):
 
 
 class PrinterStatusThread(threading.Thread):
-    def __init__(self, url, headers, status_queue, session=None, token_refresh_callback=None):
+    def __init__(self, url, headers, status_queue, session=None,
+                 token_refresh_callback=None, heartbeat_factory=None):
         super().__init__(daemon=True)
         self.url = url
         self._headers = dict(headers)
@@ -328,6 +335,9 @@ class PrinterStatusThread(threading.Thread):
         # Callback (optionnel) invoqué sur 401 pour renouveler le token ;
         # renvoie le nouveau token (str) ou None en cas d'échec.
         self._token_refresh_callback = token_refresh_callback
+        # Fabrique de heartbeat : le statut est construit à l'envoi afin que
+        # generated_at corresponde au moment réel du contact, pas à l'arrêt.
+        self._heartbeat_factory = heartbeat_factory
 
     def update_headers(self, headers):
         """Met à jour les en-têtes (ex: nouveau token) de façon thread-safe."""
@@ -392,6 +402,9 @@ class PrinterStatusThread(threading.Thread):
         pending = None
         backoff = STATUS_BACKOFF_START
         token_retries = 0  # limite les renouvellements de token immédiats
+        # On envoie un premier heartbeat dès le démarrage afin que l'admin
+        # distingue immédiatement « borne en ligne » de « aucun contact ».
+        last_contact = time.monotonic() - STATUS_HEARTBEAT_INTERVAL
         try:
             while not self._stop_event.is_set():
                 if pending is None:
@@ -400,6 +413,14 @@ class PrinterStatusThread(threading.Thread):
                     try:
                         pending = self.status_queue.get(timeout=0.5)
                     except queue.Empty:
+                        if (self._heartbeat_factory is not None
+                                and time.monotonic() - last_contact
+                                >= STATUS_HEARTBEAT_INTERVAL):
+                            try:
+                                pending = self._heartbeat_factory()
+                            except Exception:
+                                status_logger.exception(
+                                    "Création du heartbeat imprimante impossible.")
                         continue
                 else:
                     # On a un statut non acquitté : s'il en est arrivé un plus
@@ -412,6 +433,7 @@ class PrinterStatusThread(threading.Thread):
 
                 if result == 'ok':
                     pending = None
+                    last_contact = time.monotonic()
                     backoff = STATUS_BACKOFF_START
                     token_retries = 0
                     continue
@@ -471,6 +493,9 @@ class Printer:
         # File bornée : ne conserve que le dernier état (voir send_printer_status).
         self.status_queue = queue.Queue()
         self._status_lock = threading.Lock()
+        # Déduplication des états identiques : un polling « pas de papier » ne
+        # doit pas produire une ligne SQL toutes les HEALTH_CHECK_INTERVAL.
+        self._last_status_signature = None
         self.is_paper_ok = True
 
         # Verrou SÉRIALISANT tous les accès USB (ouverture, impression, contrôle
@@ -490,7 +515,8 @@ class Printer:
                 'Content-Type': 'application/json'
             },
             self.status_queue,
-            token_refresh_callback=token_refresh_callback
+            token_refresh_callback=token_refresh_callback,
+            heartbeat_factory=self._heartbeat_status
         )
         self.status_thread.start()
 
@@ -836,27 +862,42 @@ class Printer:
                 }
 
 
-    def send_printer_status(self, error, error_message):
+    def _status_item(self, error, error_message):
         # borne_id : pour distinguer les bornes côté serveur.
         # timestamp : instant de GÉNÉRATION du statut (et non d'envoi), pour
         # rester exploitable même si l'envoi n'aboutit qu'après des réessais.
-        item = {
+        return {
             'error': error,
             'message': error_message,
             'borne_id': self.borne_id,
             'timestamp': datetime.now(UTC).isoformat(),
         }
+
+    def _heartbeat_status(self):
+        """Signal de vie envoyé même sans changement d'état de l'imprimante.
+
+        Il est construit par le thread juste avant l'envoi afin que le
+        timestamp reflète le contact réel avec le serveur."""
+        return self._status_item('heartbeat', 'Borne en ligne')
+
+    def send_printer_status(self, error, error_message):
+        signature = (error, error_message)
         # File bornée qui ne conserve que le DERNIER état : si un statut est
         # encore en attente (réseau lent/bloqué), on le remplace au lieu
         # d'empiler un backlog de statuts périmés. Le serveur n'a besoin que de
-        # l'état courant de l'imprimante.
+        # l'état courant de l'imprimante. Un état strictement identique au
+        # précédent n'est pas renvoyé : le heartbeat périodique suffit à
+        # prouver que la borne reste en ligne.
         with self._status_lock:
+            if signature == self._last_status_signature:
+                return
+            self._last_status_signature = signature
             try:
                 while True:
                     self.status_queue.get_nowait()
             except queue.Empty:
                 pass
-            self.status_queue.put(item)
+            self.status_queue.put(self._status_item(error, error_message))
 
     def update_token(self, new_token):
         """Met à jour le token utilisé pour l'envoi des statuts (renouvellement

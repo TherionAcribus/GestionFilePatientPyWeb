@@ -34,6 +34,11 @@ KIOSK_RELOGIN_MIN_INTERVAL = 30
 INIT_BACKOFF_START = 5          # premier réessai après 5 s
 INIT_BACKOFF_MAX = 300          # plafond : 5 min entre deux tentatives
 
+# Surveillance de la page patient : pywebview n'expose pas d'évènement fiable
+# « navigation échouée » ; une URL chrome-error/about:blank peut donc rester
+# affichée après une coupure réseau. Ce délai borne les récupérations.
+PATIENT_PAGE_RECOVERY_INTERVAL = 30
+
 
 class _JSApiNamespace:
     """Espace de noms d'API exposé à JavaScript.
@@ -137,6 +142,9 @@ class WebViewClient:
         # naviguée par la WebView pour poser le cookie de session patient.
         self._patient_login_url = None
         self._last_relogin_attempt = None
+        self._last_page_recovery_attempt = None
+        self._page_watchdog_stop = threading.Event()
+        self._page_watchdog_thread = None
 
         # Validation stricte de la configuration AVANT démarrage. Une borne mal
         # configurée (fichier illisible, URL invalide, http distant en prod,
@@ -231,6 +239,7 @@ class WebViewClient:
         # La fenêtre est prête : on peut désormais naviguer vers /patient si la
         # borne est (ou devient) opérationnelle.
         self.window.events.shown += self._on_window_shown
+        self._start_page_watchdog()
 
     def _install_csp_safe_js_callbacks(self):
         """Redirige les retours du pont JS vers ``run_js`` quand il existe.
@@ -444,7 +453,10 @@ class WebViewClient:
         except (ValueError, KeyError) as e:
             raise SessionUnavailableError(
                 "ticket de session : réponse inattendue") from e
-        return f"{self.base_url}{login_url}"
+        parsed = urlparse(login_url)
+        if parsed.scheme and parsed.netloc:
+            return login_url
+        return f"{self.base_url.rstrip('/')}/{login_url.lstrip('/')}"
 
     def _recover_kiosk_session(self):
         """La WebView a été redirigée vers /login : la session borne est
@@ -465,6 +477,71 @@ class WebViewClient:
             logger.warning("Impossible de renouveler la session borne : %s", e)
             return
         self.window.load_url(self._patient_login_url)
+
+    def _start_page_watchdog(self):
+        """Supervise la page affichée après l'initialisation.
+
+        Une navigation peut échouer sans exception exploitable (page
+        chrome-error, URL vide ou locale restée affichée). Ce thread vérifie
+        périodiquement que la borne opérationnelle affiche bien une page du
+        serveur ; sinon il redemande un ticket de session frais avant de
+        recharger, car l'URL signée précédente peut avoir expiré pendant la
+        panne.
+        """
+        if self._page_watchdog_thread and self._page_watchdog_thread.is_alive():
+            return
+        self._page_watchdog_stop.clear()
+        self._page_watchdog_thread = threading.Thread(
+            target=self._page_watchdog_loop,
+            daemon=True)
+        self._page_watchdog_thread.start()
+
+    def _page_watchdog_loop(self):
+        while not self._page_watchdog_stop.wait(PATIENT_PAGE_RECOVERY_INTERVAL):
+            try:
+                self._recover_patient_page()
+            except Exception:
+                # Frontière Qt/pywebview : le superviseur est la sécurité de
+                # dernier recours ; il ne doit jamais mourir sur une erreur
+                # ponctuelle du moteur ou d'une lecture d'URL.
+                logger.exception("Erreur inattendue dans la surveillance de page.")
+
+    def _recover_patient_page(self):
+        """Recharge /patient quand la fenêtre n'affiche plus le serveur.
+
+        Ne touche pas à /login : ``_recover_kiosk_session`` gère ce cas avec son
+        propre throttle. Ne redemande un ticket qu'une fois par intervalle afin
+        de ne pas marteler le serveur pendant une panne prolongée.
+        """
+        if not (self.is_operational() and self.window and self._window_ready.is_set()):
+            return
+        try:
+            current_url = self.window.get_current_url()
+        except Exception:
+            logger.exception("Lecture de l'URL WebView impossible.")
+            current_url = None
+        if current_url and current_url.startswith(self.base_url):
+            return
+
+        now = time.monotonic()
+        if (self._last_page_recovery_attempt is not None
+                and now - self._last_page_recovery_attempt < PATIENT_PAGE_RECOVERY_INTERVAL):
+            return
+        self._last_page_recovery_attempt = now
+        logger.warning("Page patient absente (%r), récupération de session.", current_url)
+        try:
+            self._patient_login_url = self._fetch_patient_login_url()
+        except SessionUnavailableError as e:
+            self.connected = False
+            logger.warning("Session borne non récupérable pour l'instant : %s", e)
+            return
+        # Une navigation précédente peut être marquée réussie alors que la
+        # WebView est restée sur une page d'erreur : on autorise explicitement
+        # une nouvelle tentative avec le ticket frais.
+        with self._operational_lock:
+            self._patient_page_shown = False
+        self.connected = True
+        self._maybe_show_patient_page()
 
     def initialize_printer(self):
         """Initialise ou réutilise le gestionnaire d'imprimante."""
@@ -599,8 +676,14 @@ class WebViewClient:
             # appel réseau ne doit pas figer la fermeture de la borne).
             self._init_stop.set()
             self._token_refresh_stop.set()
+            page_watchdog_stop = getattr(self, '_page_watchdog_stop', None)
+            if page_watchdog_stop:
+                page_watchdog_stop.set()
             join_with_timeout(self._init_thread, "initialisation borne")
             join_with_timeout(self._token_refresh_thread, "renouvellement du token")
+            join_with_timeout(
+                getattr(self, '_page_watchdog_thread', None),
+                "surveillance de page")
             if self.printer:
                 self.printer.cleanup()
 

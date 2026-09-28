@@ -85,6 +85,7 @@ def make_printer(device=None, error=False, check_paper=False, monkeypatch=None,
     p.is_paper_ok = True
     p.status_queue = queue.Queue()
     p._status_lock = threading.Lock()
+    p._last_status_signature = None
     # Verrou USB sérialisant les accès (ajouté avec la reconnexion USB) :
     # Printer.print l'acquiert, le helper doit donc le fournir.
     p._usb_lock = threading.RLock()
@@ -612,6 +613,55 @@ def test_custom_usb_read_uses_timeout():
 
     assert custom._read() == b'ready'
     assert custom.device.calls == [(0x82, 16, 1234)]
+
+
+def test_send_printer_status_deduplicates_identical_states(monkeypatch):
+    """Le polling santé peut produire le même état toutes les 10 s : on ne
+    remet en file qu'un changement réel, le heartbeat prouvant la présence."""
+    p = make_printer(check_paper=False, monkeypatch=monkeypatch)
+
+    p.send_printer_status('error_not_found', 'Imprimante absente')
+    p.send_printer_status('error_not_found', 'Imprimante absente')
+
+    assert p.status_queue.qsize() == 1
+
+    p.send_printer_status('error_init', 'Initialisation impossible')
+    assert p.status_queue.qsize() == 1
+    assert p.status_queue.get_nowait()['error'] == 'error_init'
+
+
+def test_status_thread_sends_periodic_heartbeat(monkeypatch):
+    """Sans changement d'état, la borne envoie quand même un signal de vie
+    afin que le serveur puisse distinguer OK d'injoignable."""
+    sent = threading.Event()
+    payloads = []
+
+    class _Response:
+        status_code = 200
+
+    class _Session:
+        def post(self, url, json=None, headers=None, timeout=None):
+            payloads.append(json)
+            sent.set()
+            return _Response()
+
+    monkeypatch.setattr(printer_module, 'STATUS_HEARTBEAT_INTERVAL', 0.01)
+    thread = printer_module.PrinterStatusThread(
+        'http://srv/api/printer/status',
+        {'X-App-Token': 'token'},
+        queue.Queue(),
+        session=_Session(),
+        heartbeat_factory=lambda: {'error': 'heartbeat', 'message': 'en ligne'},
+    )
+
+    thread.start()
+    try:
+        assert sent.wait(2), "aucun heartbeat envoyé"
+        assert payloads[0]['error'] == 'heartbeat'
+    finally:
+        thread.stop()
+        thread.join(2)
+    assert not thread.is_alive()
 
 
 def test_custom_usb_requires_set_configuration():

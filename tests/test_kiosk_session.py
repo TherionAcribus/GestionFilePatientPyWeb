@@ -78,6 +78,7 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client.window = None
     client._patient_login_url = None
     client._last_relogin_attempt = None
+    client._last_page_recovery_attempt = None
     client._patient_page_shown = False
     client.operational = False
     client._operational_lock = threading.Lock()
@@ -98,6 +99,20 @@ def test_fetch_login_url_posts_app_token_and_returns_full_url():
     call = client.session.calls[0]
     assert call["url"] == "http://127.0.0.1:5000/api/kiosk/session_ticket"
     assert call["headers"]["X-App-Token"] == "token-appli"
+
+
+def test_fetch_login_url_preserves_absolute_and_prefixed_urls():
+    client = _bare_client(base_url="https://site.example/prefix")
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "/patient/kiosk_login/signed-ticket"}))
+    assert client._fetch_patient_login_url() == (
+        "https://site.example/prefix/patient/kiosk_login/signed-ticket")
+
+    client = _bare_client()
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "https://srv.example/patient/kiosk_login/ticket"}))
+    assert client._fetch_patient_login_url() == (
+        "https://srv.example/patient/kiosk_login/ticket")
 
 
 def test_fetch_login_url_refuses_non_200():
@@ -204,6 +219,62 @@ def test_relogin_survives_ticket_failure():
 
     client.on_loaded()  # ne doit pas lever
 
+    assert client.window.loaded_urls == []
+
+
+def test_page_watchdog_recovers_dead_page_with_fresh_ticket():
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    window = _FakeWindow("about:blank")
+    client.window = window
+    session = _FakeSession(_FakeResponse(
+        200, {"login_url": "https://srv/secure?token=watchdog"}))
+    client.session = session
+
+    client._recover_patient_page()
+
+    assert session.calls == [{
+        "url": "http://127.0.0.1:5000/api/kiosk/session_ticket",
+        "headers": {"X-App-Token": "token-appli"},
+    }]
+    assert window.loaded_urls == ["https://srv/secure?token=watchdog"]
+    assert client._patient_page_shown is True
+    assert client._patient_login_url == "https://srv/secure?token=watchdog"
+
+
+def test_page_watchdog_keeps_server_page_and_login_untouched():
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    session = _FakeSession(_FakeResponse(200, {"login_url": "/patient/kiosk_login/t"}))
+    client.session = session
+
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client._recover_patient_page()
+    assert session.calls == []
+
+    client.window = _FakeWindow("http://127.0.0.1:5000/login")
+    client._recover_patient_page()
+    assert session.calls == []  # _recover_kiosk_session gère /login
+
+
+def test_page_watchdog_rate_limits_unrecoverable_session():
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client.window = _FakeWindow("chrome-error://webengine/")
+    client.session = _FakeSession(_FakeResponse(500, {}))
+
+    client._recover_patient_page()
+    client._recover_patient_page()
+
+    assert len(client.session.calls) == 1
+    assert client.connected is False
     assert client.window.loaded_urls == []
 
 

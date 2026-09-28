@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff
-        run: pip install ruff==0.6.9
+        run: pip install ruff==0.16.8
       - name: Ruff check
         run: ruff check .
 
@@ -53,7 +53,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install security tools
-        run: pip install bandit==1.7.10 pip-audit==2.7.3
+        run: pip install bandit==1.9.4 pip-audit==2.10.1
       - name: Bandit (SAST)
         continue-on-error: true
         run: bandit -r . -ll -x ./tests

@@ -5,19 +5,22 @@
 # validée :   pip freeze > requirements.lock.txt
 # et réconciliez les versions ci-dessous avec celles réellement déployées.
 #
-# Interface graphique kiosque (pywebview + backend Qt).
-pywebview==5.1
-PySide6==6.7.0            # backend Qt de pywebview (PYWEBVIEW_GUI="qt")
+# Interface graphique kiosque (pywebview + backend Qt/PySide6).
+# L'extra pyside6 déclare QtPy, requis par le backend Qt ; les versions sont
+# épinglées explicitement pour une installation reproductible.
+pywebview[pyside6]==6.2.1
+PySide6==6.11.2
+QtPy==2.4.3
 
 # Appels HTTP vers le serveur (token, statuts imprimante).
-requests==2.33.0
+requests==2.34.2
 
 # Imprimante ticket ESC/POS via USB.
 python-escpos==3.1
-pyusb==1.2.1
+pyusb==1.3.1
 
 # Stockage sécurisé des secrets (mot de passe, secret d'application) dans le
 # gestionnaire d'identifiants du système (Credential Manager / Trousseau /
 # Secret Service). Sans backend fonctionnel, la borne REFUSE d'écrire les
 # secrets en clair en production (cf. secret_store / config.save_settings).
-keyring==25.2.1
+keyring==25.7.0

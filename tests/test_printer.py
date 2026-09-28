@@ -36,11 +36,22 @@ def _b64(text):
 class FakeDevice:
     """Imite l'objet imprimante escpos utilisé par Printer.print."""
 
-    def __init__(self, text_exc=None, paper_status_value=2):
+    def __init__(self, text_exc=None, paper_status_value=2, open_exc=None,
+                 paper_exc=None):
         self.text_exc = text_exc
         self.paper_status_value = paper_status_value
+        self.open_exc = open_exc
+        self.paper_exc = paper_exc
+        self.open_calls = 0
+        self.close_calls = 0
+        self.paper_calls = 0
         self.text_calls = []
         self.cut_calls = 0
+
+    def open(self):
+        self.open_calls += 1
+        if self.open_exc is not None:
+            raise self.open_exc
 
     def text(self, data):
         self.text_calls.append(data)
@@ -51,10 +62,13 @@ class FakeDevice:
         self.cut_calls += 1
 
     def paper_status(self):
+        self.paper_calls += 1
+        if self.paper_exc is not None:
+            raise self.paper_exc
         return self.paper_status_value
 
     def close(self):
-        pass
+        self.close_calls += 1
 
 
 def make_printer(device=None, error=False, check_paper=False, monkeypatch=None,
@@ -414,6 +428,7 @@ def test_initialize_printer_uses_injected_factory(monkeypatch):
 
     assert p.p is fake
     assert p.error is False
+    assert fake.open_calls == 1
     # La fabrique a reçu les identifiants/modèle du Printer.
     assert calls == [(0x04b8, 0x0202, 'TM-T88II')]
 
@@ -427,10 +442,115 @@ def test_initialize_printer_factory_failure_sets_error(monkeypatch):
     p = make_printer(device=None, check_paper=False, monkeypatch=monkeypatch,
                      device_factory=factory)
 
-    p.initialize_printer()
+    assert p.initialize_printer() is False
 
     assert p.p is None
     assert p.error is True
+
+
+def test_initialize_printer_requires_real_open(monkeypatch):
+    """Un objet retourné par la fabrique ne suffit pas : ``open()`` doit
+    réussir avant que ``p`` soit considéré connecté."""
+    fake = FakeDevice(open_exc=printer_module.DeviceNotFoundError("absent"))
+    p = make_printer(device=None, check_paper=False, monkeypatch=monkeypatch,
+                     device_factory=lambda v, pr, m: fake)
+
+    assert p.initialize_printer() is False
+
+    assert fake.open_calls == 1
+    assert fake.close_calls == 1
+    assert p.p is None
+    assert p.error is True
+    assert p.status_queue.get_nowait()['error'] == 'error_not_found'
+
+
+def test_try_reconnect_reopens_until_success(monkeypatch):
+    """La boucle de santé retrouve bien un handle OUVERT après un échec initial."""
+    devices = [FakeDevice(open_exc=printer_module.DeviceNotFoundError("absent")),
+               FakeDevice()]
+    calls = []
+
+    def factory(id_vendor, id_product, model):
+        device = devices[len(calls)]
+        calls.append(device)
+        return device
+
+    p = make_printer(device=None, check_paper=False, monkeypatch=monkeypatch,
+                     device_factory=factory)
+
+    assert p.initialize_printer() is False
+    p._try_reconnect()
+
+    assert [d.open_calls for d in devices] == [1, 1]
+    assert devices[0].close_calls == 1
+    assert p.p is devices[1]
+    assert p.error is False
+
+
+def test_paper_check_error_closes_handle_and_blocks_print(monkeypatch):
+    """Une sonde USB en échec ne doit pas mener à une impression sur un état
+    inconnu : le handle est fermé puis rouvert par le gestionnaire de santé."""
+    fake = FakeDevice(paper_exc=RuntimeError("lecture impossible"))
+    p = make_printer(device=fake, check_paper=True, monkeypatch=monkeypatch)
+
+    result = p.print(VALID_PAYLOAD)
+
+    assert result['success'] is False
+    assert result['code'] == 'error_paper_check'
+    assert fake.text_calls == []
+    assert fake.close_calls == 1
+    assert p.p is None
+    assert p.error is True
+
+
+def test_unknown_paper_status_blocks_print(monkeypatch):
+    """Un code papier hors contrat n'est pas transformé en succès."""
+    fake = FakeDevice(paper_status_value=99)
+    p = make_printer(device=fake, check_paper=True, monkeypatch=monkeypatch)
+
+    result = p.print(VALID_PAYLOAD)
+
+    assert result['success'] is False
+    assert result['code'] == 'error_paper_check'
+    assert fake.text_calls == []
+
+
+def test_custom_usb_requires_set_configuration():
+    """La surcharge CustomUsb rend l'échec de configuration USB fatal."""
+    class Device:
+        def set_configuration(self):
+            raise printer_module.usb.core.USBError("configuration refusée")
+
+        def reset(self):
+            raise AssertionError("ne doit pas être appelé")
+
+    custom = printer_module.CustomUsb.__new__(printer_module.CustomUsb)
+    custom.device = Device()
+
+    with pytest.raises(printer_module.usb.core.USBError):
+        custom._configure_usb()
+
+
+def test_custom_usb_tolerates_reset_failure_after_configuration():
+    """La preuve minimale est ``set_configuration`` ; un reset non supporté ne
+    doit pas rejeter une imprimante par ailleurs correctement ouverte."""
+    class Device:
+        def __init__(self):
+            self.calls = []
+
+        def set_configuration(self):
+            self.calls.append('configure')
+
+        def reset(self):
+            self.calls.append('reset')
+            raise printer_module.usb.core.USBError("reset non supporté")
+
+    custom = printer_module.CustomUsb.__new__(printer_module.CustomUsb)
+    custom.device = Device()
+
+    custom._configure_usb()
+
+    assert custom.device.calls == ['configure', 'reset']
 
 
 def test_print_end_to_end_with_fake_printer(monkeypatch):

@@ -467,13 +467,22 @@ class ConfigEditor(tk.Tk):
 
     def _probe_printer(self, id_vendor, id_product, model):
         try:
-            from escpos.printer import Usb
+            from printer import CustomUsb
         except ImportError as e:
             return False, ("Module d'impression (python-escpos) indisponible dans "
                            f"cet éditeur :\n{e}")
+        printer = None
         try:
-            printer = Usb(int(id_vendor, 16), int(id_product, 16), profile=model)
+            printer = CustomUsb(
+                int(id_vendor, 16), int(id_product, 16), profile=model)
+            # Créer l'objet ne suffit pas : open() localise puis configure le
+            # périphérique. La surcharge CustomUsb rend l'échec fatal au lieu
+            # de le limiter à un log.
+            printer.open()
         except Exception as e:
+            if printer is not None:
+                with contextlib.suppress(Exception):
+                    printer.close()
             # FRONTIÈRE MATÉRIELLE : la pile USB remonte des types très variés.
             return False, (f"Imprimante non disponible :\n{e}\n\n"
                            "Vérifiez qu'elle est branchée, sous tension, et que "

@@ -163,6 +163,11 @@ def keyboard_script() -> str:
     """Gestionnaire de touches (F11 = plein écran via le pont pywebview)."""
     return _script("keyboard.js")
 
+
+def pywebview_bridge_script() -> str:
+    """Pont JavaScript compatible CSP vers les fonctions Python exposées."""
+    return _script("pywebview_bridge.js")
+
 # NOTE : le script de connexion automatique (assets/login.js) a été retiré :
 # la borne n'injecte plus d'identifiants dans le DOM. La session patient est
 # obtenue par ticket signé (/api/kiosk/session_ticket -> /patient/kiosk_login),

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import requests
 import usb.core  # pyusb : dépendance de python-escpos, fournit USBError
 from escpos.constants import RT_STATUS_PAPER
-from escpos.exceptions import USBNotFoundError
+from escpos.exceptions import DeviceNotFoundError, USBNotFoundError
 from escpos.printer import Usb
 from requests.exceptions import RequestException
 
@@ -25,6 +25,22 @@ status_logger = logging.getLogger("borne.status")
 
 
 class CustomUsb(Usb):
+    def _configure_usb(self):
+        """Configure réellement le périphérique au lieu de masquer l'échec.
+
+        ``python-escpos`` journalise un ``USBError`` de ``set_configuration``
+        puis continue : sans surcharge, ``open()`` peut réussir alors que
+        l'interface USB n'est pas utilisable. On exige donc la configuration ;
+        la réinitialisation reste tolérée car elle n'est pas indispensable à
+        l'écriture sur tous les modèles."""
+        if not self.device:
+            raise USBNotFoundError("Imprimante USB introuvable")
+        self.device.set_configuration()
+        try:
+            self.device.reset()
+        except (usb.core.USBError, NotImplementedError) as e:
+            logger.warning("Réinitialisation USB non confirmée : %s", e)
+
     def query_status(self, mode):
         """
         Surcharge de escpos.printer.Usb.query_status : un tableau vide est
@@ -51,9 +67,10 @@ class CustomUsb(Usb):
 
 def _default_device_factory(id_vendor, id_product, printer_model):
     """Fabrique par défaut du périphérique d'impression : le VRAI matériel USB
-    (CustomUsb / python-escpos). Point de découplage matériel — les tests
-    injectent une fabrique renvoyant une fausse imprimante (voir
-    Printer(device_factory=...))."""
+    (CustomUsb / python-escpos), encore non ouvert. Point de découplage
+    matériel — les tests injectent une fabrique renvoyant une fausse imprimante
+    exposant ``open()``, ``text()``, ``cut()``, ``paper_status()`` et
+    ``close()`` (voir ``Printer(device_factory=...)``)."""
     return CustomUsb(id_vendor, id_product, profile=printer_model)
 
 
@@ -409,7 +426,9 @@ class Printer:
         # fabrique injectable. En production c'est CustomUsb (vrai matériel) ;
         # les tests injectent une fausse imprimante sans dépendance USB.
         # La fabrique reçoit (idVendor:int, idProduct:int, model:str) et renvoie
-        # un objet exposant text(), cut(), paper_status(), close().
+        # un objet NON ouvert exposant open(), text(), cut(), paper_status(),
+        # close(). initialize_printer() appelle open() : la création de l'objet
+        # ne suffit pas à prouver la connexion USB.
         self._device_factory = device_factory or _default_device_factory
         # Identifiant de la borne joint à chaque statut (repli sur le hostname si
         # non configuré) pour distinguer les bornes côté serveur.
@@ -473,7 +492,26 @@ class Printer:
         self._health_thread = threading.Thread(target=self._health_loop, daemon=True)
         self._health_thread.start()
 
+    def _open_printer_device(self):
+        """Crée puis ouvre le périphérique fourni par la fabrique.
+
+        ``escpos.printer.Usb.__init__`` ne contacte pas le matériel : sans
+        ``open()``, l'application pouvait croire une imprimante absente
+        connectée. Le périphérique est fermé puis l'erreur propagée si son
+        ouverture échoue ; il ne devient ``self.p`` qu'après succès."""
+        device = self._device_factory(self.idVendor, self.idProduct,
+                                      self.printer_model)
+        try:
+            device.open()
+        except Exception:
+            with contextlib.suppress(Exception):
+                device.close()
+            raise
+        return device
+
     def initialize_printer(self):
+        """Ouvre réellement l'imprimante. Renvoie ``True`` si le handle USB est
+        utilisable, ``False`` après une absence/panne gérée."""
         # Ouverture USB sérialisée : jamais concurrente d'une impression ou d'une
         # tentative de reconnexion par le thread de santé.
         with self._usb_lock:
@@ -481,16 +519,16 @@ class Printer:
             # on le ferme avant d'en ouvrir un nouveau.
             self._close_printer()
             try:
-                self.p = self._device_factory(self.idVendor, self.idProduct,
-                                              self.printer_model)
+                self.p = self._open_printer_device()
                 self.send_printer_status('init_ok', "Imprimante USB initialisée avec succès.")
                 self.error = False
                 logger.info("Imprimante USB initialisée avec succès (état USB: connectée).")
-            except USBNotFoundError:
-                logger.warning("Imprimante USB non trouvée (état USB: absente).")
+            except DeviceNotFoundError as e:
+                logger.warning("Imprimante USB non trouvée (état USB: absente) : %s", e)
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_not_found', "Imprimante USB non trouvée.")
+                return False
             except ValueError as e:
                 if "langid" in str(e):
                     raise  # Remonter l'erreur pour une gestion spéciale
@@ -498,6 +536,7 @@ class Printer:
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
+                return False
             except Exception as e:
                 # FRONTIÈRE MATÉRIELLE : la pile USB (libusb/pyusb/python-escpos)
                 # remonte des types très variés (USBError, OSError, erreurs
@@ -508,9 +547,12 @@ class Printer:
                 self.p = None
                 self.error = True
                 self.send_printer_status('error_init', f"Erreur lors de l'initialisation : {e}")
-            # vérification du papier
+                return False
+            # vérification du papier : une erreur de communication a fermé le
+            # handle dans check_paper_status ; le gestionnaire de santé rouvrira.
             if Config().settings.check_paper:
                 self.check_paper_status()
+            return self.p is not None
 
     def _close_printer(self):
         """Ferme proprement le handle USB courant (le cas échéant) et repart de
@@ -587,11 +629,6 @@ class Printer:
         # peuvent pas toucher en même temps le handle USB. Le second attend le
         # premier au lieu d'entrelacer octets et découpes.
         with self._usb_lock:
-            # Vérification du papier avant chaque impression si l'option est
-            # active ; sinon on considère le papier disponible.
-            paper_code = (self.check_paper_status()
-                          if Config().settings.check_paper else 'paper_ok')
-
             if self.p is None:
                 log.error("Impression impossible : imprimante non initialisée.")
                 self.error = True
@@ -602,12 +639,27 @@ class Printer:
                     'message': "Imprimante non initialisée correctement."
                 }
 
+            # Vérification du papier avant chaque impression si l'option est
+            # active ; sinon on considère le papier disponible.
+            paper_code = (self.check_paper_status()
+                          if Config().settings.check_paper else 'paper_ok')
+
             if paper_code == 'no_paper':
                 log.warning("Impression refusée : plus de papier.")
                 return {
                     'success': False,
                     'code': 'no_paper',
                     'message': "Plus de papier dans l'imprimante."
+                }
+
+            if paper_code == 'paper_check_error':
+                # La lecture d'état a échoué : la connexion USB n'est plus
+                # considérée fiable (check_paper_status a déjà fermé le handle).
+                log.error("Impression refusée : état de l'imprimante non vérifiable.")
+                return {
+                    'success': False,
+                    'code': 'error_paper_check',
+                    'message': "Impossible de vérifier l'état de l'imprimante."
                 }
 
             # Décodage ET validation stricte de la charge (base64 -> texte).
@@ -769,17 +821,28 @@ class Printer:
                         "Il ne reste pas beaucoup de papier dans l'imprimante")
                     self.is_paper_ok = False
                     return 'low_paper'
-                # on envoie un message si le papier est ok uniquement si ce n'était pas le cas avant
-                if not self.is_paper_ok:
-                    self.send_printer_status("paper_ok", "Papier remis dans l'imprimante")
-                    self.is_paper_ok = True
-                return 'paper_ok'
+                if paper_status == 2:
+                    # on envoie un message si le papier est ok uniquement si ce
+                    # n'était pas le cas avant
+                    if not self.is_paper_ok:
+                        self.send_printer_status("paper_ok", "Papier remis dans l'imprimante")
+                        self.is_paper_ok = True
+                    return 'paper_ok'
+
+                logger.warning("État papier non reconnu : %s", paper_status)
+                self.send_printer_status(
+                    "error_paper_check",
+                    "État papier renvoyé par l'imprimante non reconnu")
+                return 'paper_check_error'
 
             except Exception as e:
                 # Frontière matérielle : la lecture d'état papier échoue dès que
-                # le lien USB est perturbé. Cas courant -> avertissement sans
-                # trace, l'état est remonté au serveur.
+                # le lien USB est perturbé. Le handle n'est plus fiable : on le
+                # ferme pour que le gestionnaire de santé rouvre une connexion
+                # réellement vérifiée au prochain passage.
                 logger.warning("Erreur lors de la vérification papier: %s", e)
+                self._close_printer()
+                self.error = True
                 self.send_printer_status(
                     "error_paper_check",
                     f"Erreur lors de la vérification papier: {e}")

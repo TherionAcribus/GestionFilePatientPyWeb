@@ -78,7 +78,6 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client.window = None
     client._patient_login_url = None
     client._last_relogin_attempt = None
-    client._protection_injected = True  # injections kiosque hors sujet ici
     client._patient_page_shown = False
     client.operational = False
     client._operational_lock = threading.Lock()
@@ -206,3 +205,51 @@ def test_relogin_survives_ticket_failure():
     client.on_loaded()  # ne doit pas lever
 
     assert client.window.loaded_urls == []
+
+
+def test_js_api_namespace_hides_members_from_pywebview_generation():
+    """La CSP refuse le `new Function` de génération automatique : `dir()` doit
+    rester vide, mais `js_bridge_call` résout toujours les membres via getattr."""
+    def action():
+        return {"ok": True}
+
+    api = main._JSApiNamespace(printer=main._JSApiNamespace(print_ticket=action))
+
+    assert dir(api) == []
+    assert api.printer.print_ticket() == {"ok": True}
+    assert getattr(api.printer, "set_print_callback", None) is None
+
+
+def test_run_page_script_prefers_csp_safe_run_js():
+    class Window:
+        def __init__(self):
+            self.scripts = []
+
+        def run_js(self, script):
+            self.scripts.append(("run_js", script))
+
+        def evaluate_js(self, _script):
+            raise AssertionError("evaluate_js utilise eval(), bloqué par la CSP")
+
+    client = _bare_client()
+    client.window = Window()
+
+    client._run_page_script("window.x = 1")
+
+    assert client.window.scripts == [("run_js", "window.x = 1")]
+
+
+def test_run_page_script_falls_back_to_evaluate_js():
+    class Window:
+        def __init__(self):
+            self.scripts = []
+
+        def evaluate_js(self, script):
+            self.scripts.append(script)
+
+    client = _bare_client()
+    client.window = Window()
+
+    client._run_page_script("window.x = 1")
+
+    assert client.window.scripts == ["window.x = 1"]

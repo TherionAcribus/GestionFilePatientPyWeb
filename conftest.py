@@ -28,9 +28,13 @@ def _install_escpos_stub():
 
     exceptions_mod = types.ModuleType('escpos.exceptions')
 
-    class USBNotFoundError(Exception):
+    class DeviceNotFoundError(Exception):
         pass
 
+    class USBNotFoundError(DeviceNotFoundError):
+        pass
+
+    exceptions_mod.DeviceNotFoundError = DeviceNotFoundError
     exceptions_mod.USBNotFoundError = USBNotFoundError
 
     constants_mod = types.ModuleType('escpos.constants')

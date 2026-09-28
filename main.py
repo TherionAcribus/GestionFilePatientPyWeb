@@ -35,6 +35,28 @@ INIT_BACKOFF_START = 5          # premier réessai après 5 s
 INIT_BACKOFF_MAX = 300          # plafond : 5 min entre deux tentatives
 
 
+class _JSApiNamespace:
+    """Espace de noms d'API exposé à JavaScript.
+
+    ``dir()`` renvoie volontairement une liste vide : la génération automatique
+    de pywebview 6 utilise ``new Function`` pour créer les fonctions publiques,
+    ce qui est bloqué par la CSP stricte des pages serveur. Les appels réels
+    restent résolus par ``getattr`` depuis ``js_bridge_call``, puis exposés côté
+    page par ``assets/pywebview_bridge.js`` sans ``eval`` ni ``Function``.
+    """
+    def __init__(self, **members):
+        object.__setattr__(self, '_members', members)
+
+    def __getattr__(self, name):
+        try:
+            return object.__getattribute__(self, '_members')[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def __dir__(self):
+        return []
+
+
 class WindowControlAPI:
     """API pour la gestion des contrôles de la fenêtre"""
     def __init__(self):
@@ -91,8 +113,6 @@ class WebViewClient:
             'on_top': True,
         }
 
-
-        self._protection_injected = False
 
         # Session HTTP persistante (keep-alive) pour les appels de la borne :
         # évite de rouvrir une connexion TCP/TLS à chaque requête.
@@ -169,12 +189,12 @@ class WebViewClient:
         """Crée et configure la fenêtre WebView"""
         self.window_api.set_fullscreen_callback(self.toggle_fullscreen)
 
-        class CombinedAPI:
-            def __init__(self, printer_api, window_api):
-                self.printer = printer_api
-                self.window = window_api
-
-        combined_api = CombinedAPI(self.printer_api, self.window_api)
+        js_api = _JSApiNamespace(
+            printer=_JSApiNamespace(
+                print_ticket=self.printer_api.print_ticket),
+            window=_JSApiNamespace(
+                toggle_fullscreen=self.window_api.toggle_fullscreen),
+        )
 
         # Tant que la borne n'est pas opérationnelle, on affiche l'écran local
         # « Borne hors ligne » (indépendant du serveur) plutôt que /patient :
@@ -198,11 +218,12 @@ class WebViewClient:
         self.window = webview.create_window(
             title="PharmaFile",
             fullscreen=Config().settings.fullscreen,
-            js_api=combined_api,
+            js_api=js_api,
             background_color='#FFFFFF',
             **content_kwargs,
             **self.webview_settings  # Applique les configurations d'optimisation
         )
+        self._install_csp_safe_js_callbacks()
 
         # Ajout des gestionnaires d'événements
         self.window.events.loaded += self.on_loaded
@@ -211,12 +232,39 @@ class WebViewClient:
         # borne est (ou devient) opérationnelle.
         self.window.events.shown += self._on_window_shown
 
+    def _install_csp_safe_js_callbacks(self):
+        """Redirige les retours du pont JS vers ``run_js`` quand il existe.
+
+        pywebview 6 exécute ces retours via ``evaluate_js``, qui encapsule le
+        code dans ``eval()`` et échoue sous la CSP ``script-src 'self'`` du
+        serveur. ``run_js`` passe directement par ``runJavaScript`` : même
+        action, sans exiger ``unsafe-eval``. Sur les anciennes versions sans
+        ``run_js``, ``evaluate_js`` reste le repli.
+        """
+        run_js = getattr(self.window, 'run_js', None)
+        if callable(run_js):
+            self.window.evaluate_js = run_js
+
+    def _run_page_script(self, script):
+        """Exécute un script injecté sans ``eval`` quand le backend le permet."""
+        if not script:
+            return
+        run_js = getattr(self.window, 'run_js', None)
+        if callable(run_js):
+            run_js(script)
+        else:
+            self.window.evaluate_js(script)
+
+    def inject_pywebview_bridge(self):
+        """Expose les fonctions Python attendues par les pages servies."""
+        self._run_page_script(ui_assets.pywebview_bridge_script())
+
     # Injection de code JS pour désactiver le menu contextuel et gérer le curseur
     def disable_context_menu_and_cursor(self):
         """Désactive le menu contextuel, bloque le pinch-zoom (multitouch) et
         gère le curseur. Le script vit dans ``assets/kiosk_input.js`` (voir
         ui_assets) ; seul le réglage ``hide_cursor`` y est injecté."""
-        self.window.evaluate_js(
+        self._run_page_script(
             ui_assets.kiosk_input_script(Config().settings.hide_cursor))
 
     def get_app_token(self, max_retries=3, retry_delay=2):
@@ -470,13 +518,13 @@ class WebViewClient:
         # L'écran local « Borne hors ligne » (chargé via html=) gère lui-même sa
         # présentation ; les injections kiosque ne concernent que les pages
         # servies par le serveur. On les saute donc tant qu'on n'est pas sur une
-        # URL du serveur, ce qui évite aussi de consommer prématurément le
-        # verrou _protection_injected.
+        # URL du serveur. Les scripts sont idempotents : ils sont réinjectés à
+        # chaque navigation, car chaque chargement repart d'un contexte JS neuf.
         if not (current_url or '').startswith(self.base_url):
             return
 
-        if not self._protection_injected:
-            self.inject_kiosk_protection()
+        self.inject_pywebview_bridge()
+        self.inject_kiosk_protection()
 
         # Injecte le gestionnaire de touches
         self.inject_keyboard_handler()
@@ -515,14 +563,13 @@ class WebViewClient:
 
     def inject_keyboard_handler(self):
         """Injecte le gestionnaire de touches F11 (assets/keyboard.js)."""
-        self.window.evaluate_js(ui_assets.keyboard_script())
+        self._run_page_script(ui_assets.keyboard_script())
 
     def inject_kiosk_protection(self):
         """Injecte les protections kiosque sur les pages servies (clic droit,
         zoom, sélection sur appui long). Le script vit dans
         ``assets/kiosk_protection.js`` (voir ui_assets)."""
-        self.window.evaluate_js(ui_assets.kiosk_protection_script())
-        self._protection_injected = True
+        self._run_page_script(ui_assets.kiosk_protection_script())
 
 
     def run(self):

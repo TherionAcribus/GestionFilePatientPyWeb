@@ -93,6 +93,7 @@ def test_scripts_are_idempotent_guarded():
     # protégés par un drapeau global.
     assert "_contextMenuDisabled" in ui_assets.kiosk_input_script(True)
     assert "_kioskProtected" in ui_assets.kiosk_protection_script()
+    assert "__bornePywebviewBridge" in ui_assets.pywebview_bridge_script()
 
 
 def test_keyboard_script_binds_f11():
@@ -129,6 +130,7 @@ def test_missing_script_asset_yields_empty_injection(monkeypatch, tmp_path):
     monkeypatch.setattr(ui_assets, "ASSETS_DIR", tmp_path)
     assert ui_assets.kiosk_protection_script() == ""
     assert ui_assets.keyboard_script() == ""
+    assert ui_assets.pywebview_bridge_script() == ""
 
 
 def test_each_placeholder_appears_once_per_asset():
@@ -142,6 +144,7 @@ def test_each_placeholder_appears_once_per_asset():
         "offline.html": [],
         "kiosk_protection.js": [],
         "keyboard.js": [],
+        "pywebview_bridge.js": [],
     }
     for name, placeholders in expected.items():
         content = ui_assets.load(name)

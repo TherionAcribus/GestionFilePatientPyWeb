@@ -1,7 +1,9 @@
 # config_editor.py
 import contextlib
 import logging
+import queue
 import threading
+import time
 import tkinter as tk
 from dataclasses import fields
 from tkinter import messagebox, ttk
@@ -177,6 +179,21 @@ class ConfigEditor(tk.Tk):
         ttk.Button(button_frame, text="Enregistrer",
                    command=self.save_config).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Annuler", command=self._on_close).pack(side=tk.LEFT)
+        row += 1
+
+        # Journal des diagnostics : chaque étape des tests serveur/imprimante y
+        # apparaît horodatée, en temps réel (les workers postent via after()).
+        # Sans lui, l'utilisateur ne saurait pas si le test tourne encore.
+        log_frame = ttk.LabelFrame(scrollable_frame, text="Journal des tests")
+        log_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 5))
+        self._test_log = tk.Text(log_frame, height=7, state="disabled",
+                                 wrap="word", relief="flat")
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical",
+                                   command=self._test_log.yview)
+        self._test_log.configure(yscrollcommand=log_scroll.set)
+        self._test_log.pack(side="left", fill="both", expand=True)
+        log_scroll.pack(side="right", fill="y")
+        row += 1
 
         # Pack final
         canvas.pack(side="left", fill="both", expand=True)
@@ -323,32 +340,68 @@ class ConfigEditor(tk.Tk):
     # ------------------------------------------------------------------
     # Tests de diagnostic
     # ------------------------------------------------------------------
+    def _log_test_step(self, message):
+        """Ajoute une ligne horodatée au journal des tests.
+
+        Appelé uniquement depuis le thread UI (via ``after()``) : les widgets
+        Tk ne sont pas thread-safe."""
+        self._test_log.configure(state="normal")
+        self._test_log.insert("end",
+                              f"{time.strftime('%H:%M:%S')}  {message}\n")
+        self._test_log.see("end")
+        self._test_log.configure(state="disabled")
+
     def _run_test(self, button, busy_text, idle_text, worker):
-        """Exécute ``worker`` (renvoyant (ok: bool, message: str)) dans un thread
-        pour ne pas figer l'interface, puis affiche le résultat. Le bouton est
-        désactivé pendant le test."""
+        """Exécute ``worker(report)`` (renvoyant (ok: bool, message: str)) dans
+        un thread pour ne pas figer l'interface, puis affiche le résultat. Le
+        bouton est désactivé pendant le test. ``worker`` reçoit un callable
+        ``report(msg)`` qui journalise sa progression en temps réel."""
         button.config(state="disabled", text=busy_text)
+        self._log_test_step(f"— {busy_text}")
+
+        # Le worker ne touche JAMAIS Tk : appeler after() depuis un thread
+        # secondaire bloque avec Tcl/Tk 9 (interpréteur lié au thread UI). On
+        # passe donc par une file que le thread UI dépollue périodiquement.
+        results = queue.Queue()
+
+        def report(message):
+            results.put(("step", message))
 
         def task():
             try:
-                ok, message = worker()
+                ok, message = worker(report)
             except Exception as e:
                 # FRONTIÈRE (thread de test) : une exception qui remonterait ici
                 # tuerait le thread sans rien afficher à l'utilisateur.
                 logger.exception("Test de diagnostic en échec.")
                 ok, message = False, f"Erreur inattendue : {e}"
+            results.put(("finish", ok, message))
 
-            def finish():
+        threading.Thread(target=task, daemon=True).start()
+        self.after(50, self._poll_test_results, results, button, idle_text)
+
+    def _poll_test_results(self, results, button, idle_text):
+        """Dépile les messages du thread de test (thread UI uniquement) et se
+        replanifie tant que le test n'est pas terminé."""
+        done = False
+        while True:
+            try:
+                item = results.get_nowait()
+            except queue.Empty:
+                break
+            if item[0] == "step":
+                self._log_test_step(item[1])
+            else:
+                _, ok, message = item
+                done = True
                 button.config(state="normal", text=idle_text)
+                self._log_test_step(("✔ " if ok else "✘ ") + message)
                 if ok:
                     messagebox.showinfo("Résultat du test", message)
                 else:
                     messagebox.showerror("Résultat du test", message)
-
-            # Retour sur le thread principal Tk pour manipuler l'interface.
-            self.after(0, finish)
-
-        threading.Thread(target=task, daemon=True).start()
+        if not done:
+            self.after(50, self._poll_test_results, results, button, idle_text)
 
     def test_server(self):
         """Teste la joignabilité du serveur, la validité du secret d'application
@@ -374,13 +427,20 @@ class ConfigEditor(tk.Tk):
         base_url = settings.normalized_base_url()
         app_secret = settings.app_secret
         self._run_test(self._server_button, "Test du serveur…", "Tester le serveur",
-                       lambda: self._probe_server(base_url, app_secret))
+                       lambda report: self._probe_server(base_url, app_secret, report))
 
-    def _probe_server(self, base_url, app_secret):
+    def _probe_server(self, base_url, app_secret, report=None):
+        # report(msg) journalise la progression dans la fenêtre ; None pour les
+        # appels hors UI (tests unitaires).
+        def emit(message):
+            if report:
+                report(message)
+
         # Import local : l'éditeur doit rester ouvrable même sans `requests`
         # installé (le test de serveur est alors le seul indisponible).
         import requests
         from requests.exceptions import RequestException
+        emit(f"Étape 1/3 : jeton applicatif auprès de {base_url}…")
         try:
             response = requests.post(
                 f"{base_url}/api/get_app_token",
@@ -403,9 +463,11 @@ class ConfigEditor(tk.Tk):
             token = None
         if not token:
             return False, "Serveur joignable mais réponse inattendue (aucun token)."
+        emit("Jeton applicatif obtenu.")
 
         # Étape 2 : échange du jeton contre un ticket de session borne — c'est
         # le nouveau chemin de connexion (plus de compte utilisateur).
+        emit("Étape 2/3 : échange du jeton contre un ticket de session…")
         try:
             ticket_resp = requests.post(
                 f"{base_url}/api/kiosk/session_ticket",
@@ -425,6 +487,7 @@ class ConfigEditor(tk.Tk):
         if not login_url:
             return False, ("Ticket de session : réponse inattendue "
                            "(aucune URL de connexion).")
+        emit("Ticket de session obtenu.")
         try:
             login_target = resolve_server_url(base_url, login_url)
         except ValueError:
@@ -433,6 +496,7 @@ class ConfigEditor(tk.Tk):
 
         # Étape 3 : la route de connexion doit rediriger vers /patient (cookie
         # de session posé). Une seule tentative, sans suivre la redirection.
+        emit("Étape 3/3 : vérification de la redirection vers /patient…")
         try:
             login_resp = requests.get(
                 login_target, timeout=_TEST_TIMEOUT,
@@ -471,14 +535,21 @@ class ConfigEditor(tk.Tk):
         id_product = settings.printer_id_product
         model = settings.printer_model
         self._run_test(self._printer_button, "Test de l'imprimante…", "Tester l'imprimante",
-                       lambda: self._probe_printer(id_vendor, id_product, model))
+                       lambda report: self._probe_printer(id_vendor, id_product, model,
+                                                        report))
 
-    def _probe_printer(self, id_vendor, id_product, model):
+    def _probe_printer(self, id_vendor, id_product, model, report=None):
+        def emit(message):
+            if report:
+                report(message)
+
         try:
             from printer import USB_IO_TIMEOUT_MS, CustomUsb
         except ImportError as e:
             return False, ("Module d'impression (python-escpos) indisponible dans "
                            f"cet éditeur :\n{e}")
+        emit(f"Ouverture du périphérique USB {id_vendor}/{id_product} "
+             f"(profil {model})…")
         printer = None
         try:
             printer = CustomUsb(
@@ -496,6 +567,7 @@ class ConfigEditor(tk.Tk):
             return False, (f"Imprimante non disponible :\n{e}\n\n"
                            "Vérifiez qu'elle est branchée, sous tension, et que "
                            "l'application principale ne l'utilise pas déjà.")
+        emit("Périphérique ouvert — fermeture.")
         with contextlib.suppress(Exception):
             printer.close()
         return True, f"Imprimante détectée et ouverte avec succès (modèle {model})."

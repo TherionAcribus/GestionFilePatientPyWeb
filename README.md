@@ -39,11 +39,20 @@ Paquets système nécessaires (USB + Qt/WebEngine) :
 ```bash
 sudo apt update
 sudo apt install -y \
-  python3-venv python3-pip \
+  python3-venv python3-pip python3-tk \
   libusb-1.0-0 \
   libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
-  libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2
+  libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2t64 \
+  libxcb-cursor0
 ```
+
+> - `python3-tk` : requis par `config-editor.py` **uniquement si vous utilisez
+>   le Python système** (un Python géré par `uv` embarque déjà Tcl/Tk).
+> - `libasound2t64` est le nom du paquet sur Ubuntu ≥ 24.04 / Mint 22
+>   (`libasound2` sur les versions antérieures).
+> - `libxcb-cursor0` : **obligatoire depuis Qt 6.5** — sans lui, `main.py`
+>   abandonne au démarrage avec « Could not load the Qt platform plugin
+>   "xcb" ».
 
 > Sur Raspberry Pi, l'accélération WebEngine peut nécessiter une configuration
 > GPU/mémoire supplémentaire selon le modèle.

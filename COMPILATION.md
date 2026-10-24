@@ -80,8 +80,9 @@ Page publique des releases :
 Le binaire embarque Python, Qt et les dépendances pip, mais pas tout le
 système. Sur la borne cible, il reste nécessaire :
 
-- paquets système Qt/audio/USB : `libegl1 libgl1 libxkbcommon0 libdbus-1-3
-  libpulse0 libasound2 libusb-1.0-0` ;
+- paquets système Qt/WebEngine/USB : `libgl1 libegl1 libxkbcommon0
+  libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2
+  libxcb-cursor0 libusb-1.0-0` (identiques à ceux d'`install.sh`) ;
 - la **règle udev** pour l'imprimante ESC/POS (accès USB sans root) ;
 - le **démarrage automatique** à l'ouverture de session ;
 - la configuration (`~/.config/FileAttente/settings.json` + secrets dans le

@@ -22,7 +22,16 @@ kiosque (pywebview + Qt) et pilote l'**imprimante ticket ESC/POS** (USB).
 
 ## 2. Installation
 
-### 2.0 Installation automatique (recommandé, Linux)
+### 2.0 Binaire précompilé (Ubuntu x86_64)
+
+Des binaires prêts à l'emploi sont publiés sur la page
+[Releases](https://github.com/TherionAcribus/GestionFilePatientPyWeb/releases) :
+un dossier complet (`.tar.gz`, recommandé) ou un binaire autonome unique.
+Ils dispensent de l'environnement Python mais pas des réglages système
+(paquets Qt/USB, règle udev, démarrage automatique, configuration) — voir
+`COMPILATION.md` §5. Sur Raspberry Pi (ARM), installer via `install.sh`.
+
+### 2.1 Installation automatique (recommandé, Linux)
 
 ```bash
 bash install.sh
@@ -50,7 +59,7 @@ python -m venv env
 pip install -r requirements.txt
 ```
 
-### 2.1 Linux (Debian/Ubuntu/Raspberry Pi OS)
+### 2.2 Linux (Debian/Ubuntu/Raspberry Pi OS)
 
 Paquets système nécessaires (USB + Qt/WebEngine) :
 
@@ -78,7 +87,7 @@ sudo apt install -y \
 Puis installez les dépendances Python (cf. ci-dessus) et configurez les
 **règles udev** (section 3) pour l'accès à l'imprimante sans `root`.
 
-### 2.2 Windows
+### 2.3 Windows
 
 1. Installez **Python 3.12** (cochez « Add python.exe to PATH »).
 2. Installez le **pilote USB** de l'imprimante. Pour python-escpos/pyusb, il

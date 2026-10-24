@@ -1,0 +1,11 @@
+# Borne — dépendances de BUILD (génération du binaire Linux avec PyInstaller).
+#
+# Installe le runtime puis l'outillage de packaging.
+# Compilation : voir COMPILATION.md (`pyinstaller --noconfirm --clean PharmaFileBorne.spec`).
+
+-r requirements.txt
+
+pyinstaller==6.11.1
+# PyInstaller casse avec setuptools >= 70 (même borne de version que pour
+# l'application comptoir, cf. App_Comptoir/COMPILATION.md).
+setuptools<70.0.0

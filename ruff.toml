@@ -36,6 +36,8 @@ ignore = [
 ]
 
 [lint.per-file-ignores]
+# Fichiers .spec : PyInstaller y injecte des noms globaux (Analysis, PYZ, EXE…).
+"*.spec" = ["F821"]
 # Les tests peuvent réimporter/monkeypatcher librement. E402 (import après du
 # code) n'est PAS ignoré globalement ici : chaque test qui insère le dossier
 # parent dans sys.path avant ses imports porte déjà un `# noqa: E402` explicite,

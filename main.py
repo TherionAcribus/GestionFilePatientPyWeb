@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import threading
 import time
 from urllib.parse import urlparse
@@ -32,12 +33,23 @@ KIOSK_RELOGIN_MIN_INTERVAL = 30
 # page /patient n'est PAS chargée : aucune inscription (a fortiori nécessitant
 # un ticket) ne peut donc aboutir.
 INIT_BACKOFF_START = 5          # premier réessai après 5 s
-INIT_BACKOFF_MAX = 300          # plafond : 5 min entre deux tentatives
+INIT_BACKOFF_MAX = 60           # reprise en moins d'une minute après retour réseau
+INIT_BACKOFF_JITTER_RATIO = 0.2 # décale les bornes de 0 à 20 %
 
 # Surveillance de la page patient : pywebview n'expose pas d'évènement fiable
 # « navigation échouée » ; une URL chrome-error/about:blank peut donc rester
 # affichée après une coupure réseau. Ce délai borne les récupérations.
 PATIENT_PAGE_RECOVERY_INTERVAL = 30
+
+
+def _jittered_init_delay(delay):
+    """Désynchronise les reconnexions sans dépasser le délai nominal.
+
+    Le jitter est retranché (plutôt qu'ajouté) afin que le plafond de reprise
+    reste strictement à ``INIT_BACKOFF_MAX`` secondes.
+    """
+    jitter = random.uniform(0, delay * INIT_BACKOFF_JITTER_RATIO)
+    return max(0, delay - jitter)
 
 
 class _JSApiNamespace:
@@ -380,15 +392,17 @@ class WebViewClient:
                     # Pannes ATTENDUES : serveur injoignable (token) ou
                     # imprimante pas prête. On réessaie, écran hors ligne affiché.
                     self.connected = False
+                    wait_delay = _jittered_init_delay(delay)
                     logger.warning("Initialisation impossible, nouvel essai "
-                                   "dans %ss : %s", delay, e)
+                                   "dans %.1fs : %s", wait_delay, e)
                 except Exception:
                     # Inattendu : trace complète, mais la boucle continue (une
                     # borne ne doit jamais rester bloquée sur l'écran hors ligne
                     # à cause d'une erreur ponctuelle).
                     self.connected = False
+                    wait_delay = _jittered_init_delay(delay)
                     logger.exception("Erreur inattendue à l'initialisation, "
-                                     "nouvel essai dans %ss.", delay)
+                                     "nouvel essai dans %.1fs.", wait_delay)
 
                 # Attente commune à TOUS les échecs, attendus ou non : avant,
                 # elle ne figurait que dans la branche « inattendu », si bien
@@ -396,7 +410,7 @@ class WebViewClient:
                 # mais repartait immédiatement — la borne martelait
                 # /api/get_app_token et l'USB en boucle serrée. Interruptible
                 # (réveil immédiat à la fermeture), puis backoff borné.
-                if self._init_stop.wait(delay):
+                if self._init_stop.wait(wait_delay):
                     return
                 delay = min(delay * 2, INIT_BACKOFF_MAX)
 

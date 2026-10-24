@@ -55,6 +55,26 @@ def fast_backoff(monkeypatch):
     """Constantes de backoff ramenées à des valeurs minuscules/déterministes."""
     monkeypatch.setattr(main, "INIT_BACKOFF_START", 1)
     monkeypatch.setattr(main, "INIT_BACKOFF_MAX", 4)
+    # Le jitter est testé séparément ; ici on conserve les suites exactes
+    # 1, 2, 4 afin de vérifier le backoff lui-même.
+    monkeypatch.setattr(main.random, "uniform", lambda _lower, _upper: 0)
+
+
+def test_production_backoff_is_capped_at_one_minute():
+    assert main.INIT_BACKOFF_MAX == 60
+
+
+def test_jitter_spreads_retries_without_exceeding_nominal_delay(monkeypatch):
+    calls = []
+
+    def maximum_jitter(lower, upper):
+        calls.append((lower, upper))
+        return upper
+
+    monkeypatch.setattr(main.random, "uniform", maximum_jitter)
+
+    assert main._jittered_init_delay(60) == pytest.approx(48)
+    assert calls == [(0, 12)]
 
 
 def _fail_then_stop(client, attempts, exc):

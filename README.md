@@ -163,7 +163,10 @@ python main.py
 ```
 
 La borne affiche « Borne hors ligne » tant qu'elle n'a pas obtenu son token,
-puis charge `/patient` dès qu'elle est opérationnelle.
+puis charge `/patient` dès qu'elle est opérationnelle. Les reconnexions suivent
+un délai exponentiel avec un léger décalage aléatoire entre les bornes et un
+plafond strict de 60 secondes : le retour du réseau ne nécessite pas de
+redémarrage manuel.
 
 ### 5.1 Démarrage automatique — Linux
 

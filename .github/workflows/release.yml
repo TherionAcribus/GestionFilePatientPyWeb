@@ -48,8 +48,11 @@ jobs:
             -C dist PharmaFileBorne
 
       # Test de fumée : le binaire onefile doit démarrer (les dépendances Qt /
-      # USB système sont installées comme sur une borne réelle). Un arrêt par
-      # timeout est attendu : la borne boucle tant qu'elle n'a pas de serveur.
+      # USB système sont installées comme sur une borne réelle). Le critère est
+      # le code de sortie : sans serveur ni imprimante, la borne affiche son
+      # écran d'attente et boucle — elle est donc tuée par le timeout (124) et
+      # journalise des exceptions NORMALES (reconnexions). En revanche un
+      # module absent du bundle fait échouer le démarrage (sortie immédiate).
       - name: Test de fumée (le binaire démarre)
         run: |
           sudo apt-get update
@@ -63,10 +66,14 @@ jobs:
           code=$?
           set -e
           cat smoke.log
-          # 126/127 = inexécutable ; Traceback/ImportError = module manquant du bundle.
-          if [ "$code" -eq 126 ] || [ "$code" -eq 127 ]; then exit 1; fi
-          if grep -nE "Traceback|ModuleNotFoundError|ImportError|cannot open shared object" smoke.log; then
-            echo "::error::le binaire a planté au démarrage"
+          # 0 = sortie propre, 124 = tournait encore au timeout : OK.
+          # Tout autre code = plantage au démarrage (module absent, lib Qt…).
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
+            echo "::error::le binaire a planté au démarrage (exit $code)"
+            exit 1
+          fi
+          if grep -nE "No module named|cannot open shared object" smoke.log; then
+            echo "::error::dépendance absente du bundle"
             exit 1
           fi
 

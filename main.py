@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import sys
 import threading
 import time
 from urllib.parse import urlparse
@@ -806,7 +807,45 @@ class WebViewClient:
             if self.printer:
                 self.printer.cleanup()
 
+
+def _selfcheck():
+    """Vérifie que le binaire embarque tout le nécessaire, SANS affichage ni
+    matériel (``--selfcheck``, utilisé par le workflow de release).
+
+    Les modules importés dynamiquement — backend Qt de pywebview
+    (``gui="qt"``), backends keyring — sont les seuls que PyInstaller puisse
+    manquer : les imports statiques auraient déjà fait échouer le démarrage.
+    Retourne la liste des problèmes détectés (vide si tout va bien).
+    """
+    import importlib
+
+    problems = []
+    for module in ('webview.platforms.qt', 'PySide6.QtWebEngineWidgets',
+                   'escpos.printer', 'usb.core',
+                   'keyring.backends.SecretService', 'keyring.backends.chainer'):
+        try:
+            importlib.import_module(module)
+        except Exception as exc:  # tout rapporter : c'est un diagnostic
+            problems.append(f"{module}: {exc}")
+
+    # Données embarquées : JS interne de pywebview et écrans locaux de la borne.
+    if not os.path.isdir(os.path.join(os.path.dirname(webview.__file__), 'lib')):
+        problems.append("webview/lib absent du bundle")
+    for asset in ('offline.html', 'pywebview_bridge.js', 'config_error.html'):
+        if not (ui_assets.ASSETS_DIR / asset).is_file():
+            problems.append(f"asset manquant : {asset}")
+    return problems
+
+
 if __name__ == '__main__':
+    if '--selfcheck' in sys.argv:
+        problems = _selfcheck()
+        if problems:
+            print("selfcheck ÉCHEC : " + " | ".join(problems))
+            sys.exit(1)
+        print("selfcheck OK")
+        sys.exit(0)
+
     # Journalisation en tout premier, pour capturer même les messages émis
     # pendant le chargement de la configuration. Le niveau est ajusté ensuite
     # selon le réglage debug.

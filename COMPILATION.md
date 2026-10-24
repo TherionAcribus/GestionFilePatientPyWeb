@@ -66,8 +66,11 @@ La release contient :
 - `PharmaFileBorne-<tag>-linux-x86_64.tar.gz` : le dossier complet — format recommandé ;
 - `PharmaFileBorne-<tag>-linux-x86_64` : le binaire autonome unique.
 
-Le workflow exécute aussi un test de fumée (le binaire doit démarrer en mode
-offscreen) avant de publier.
+Le workflow exécute aussi un test de fumée avant de publier : le binaire est
+lancé avec `--selfcheck`, un mode diagnostic qui importe les modules chargés
+dynamiquement (backend Qt de pywebview, backends keyring, escpos/usb) et
+vérifie les données embarquées — sans affichage ni matériel. Il est utilisable
+aussi sur une borne réelle pour diagnostiquer un déploiement.
 
 Page publique des releases :
 <https://github.com/TherionAcribus/GestionFilePatientPyWeb/releases>

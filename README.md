@@ -22,6 +22,24 @@ kiosque (pywebview + Qt) et pilote l'**imprimante ticket ESC/POS** (USB).
 
 ## 2. Installation
 
+### 2.0 Installation automatique (recommandé, Linux)
+
+```bash
+bash install.sh
+```
+
+Le script est **idempotent** et couvre toute l'installation : paquets système,
+environnement Python, **détection de l'imprimante USB + règle udev**,
+démarrage automatique à l'ouverture de session, pré-remplissage de
+`settings.json` et raccourci « Configuration » sur le bureau. Il demande le
+mot de passe sudo une fois, puis ouvre l'éditeur de configuration où il ne
+reste que **`base_url`** et **`app_secret`** à saisir.
+
+Relancez-le simplement pour mettre à jour une borne (`git pull` + dépendances).
+
+Les sections suivantes décrivent l'installation **manuelle** (utile hors
+Debian/Ubuntu ou pour comprendre ce que fait le script).
+
 Clonez le dépôt, créez un environnement virtuel, installez les dépendances
 **épinglées** :
 
@@ -39,11 +57,20 @@ Paquets système nécessaires (USB + Qt/WebEngine) :
 ```bash
 sudo apt update
 sudo apt install -y \
-  python3-venv python3-pip \
+  python3-venv python3-pip python3-tk \
   libusb-1.0-0 \
   libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
-  libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2
+  libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2t64 \
+  libxcb-cursor0
 ```
+
+> - `python3-tk` : requis par `config-editor.py` **uniquement si vous utilisez
+>   le Python système** (un Python géré par `uv` embarque déjà Tcl/Tk).
+> - `libasound2t64` est le nom du paquet sur Ubuntu ≥ 24.04 / Mint 22
+>   (`libasound2` sur les versions antérieures).
+> - `libxcb-cursor0` : **obligatoire depuis Qt 6.5** — sans lui, `main.py`
+>   abandonne au démarrage avec « Could not load the Qt platform plugin
+>   "xcb" ».
 
 > Sur Raspberry Pi, l'accélération WebEngine peut nécessiter une configuration
 > GPU/mémoire supplémentaire selon le modèle.
@@ -67,14 +94,15 @@ Sans règle, l'ouverture USB échoue (`langid` / permissions). Créez une règle
 avec les **identifiants de VOTRE imprimante** (valeurs `printer_id_vendor` /
 `printer_id_product` de la configuration, **sans** le préfixe `0x`).
 
-Exemple pour l'Epson TM-T88 par défaut (`0x04b8` / `0x0202`) :
+Exemple pour l'Epson TM-T88 par défaut (`0x04b8` / `0x0202`) — la même règle
+que celle posée par `install.sh` :
 
 ```bash
-echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0202", MODE="0666", GROUP="dialout"' \
-  | sudo tee /etc/udev/rules.d/99-escpos-printer.rules
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0202", MODE="0664", GROUP="plugdev", TAG+="uaccess"' \
+  | sudo tee /etc/udev/rules.d/99-pharmafile-printer.rules
 
-sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -a -G dialout "$USER"    # puis déconnexion/reconnexion
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+sudo usermod -a -G plugdev "$USER"    # puis déconnexion/reconnexion
 ```
 
 > Les identifiants USB (vendeur/produit) sont visibles avec `lsusb`.

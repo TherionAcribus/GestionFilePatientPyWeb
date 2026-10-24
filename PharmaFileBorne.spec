@@ -6,7 +6,7 @@
 # PharmaFileBorne_onefile.spec : tests/test_build_spec.py compare les deux
 # fichiers et échoue en cas de divergence.
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 # Imports invisibles pour l'analyse statique :
 # - pywebview choisit son backend à l'exécution (webview.start(gui="qt")) ;
@@ -30,9 +30,18 @@ DEV_EXCLUDES = [
     'pytest', 'pyinstaller', 'tkinter',
 ]
 
-# datas : assets/ de la borne (résolus via __file__ -> sys._MEIPASS) + les
-# fichiers JS/CSS internes de pywebview (webview/lib).
-DATAS = [('assets', 'assets'), *collect_data_files('webview')]
+# datas :
+# - assets/ de la borne (résolus via __file__ -> sys._MEIPASS) ;
+# - webview/lib (JS/CSS internes de pywebview) ;
+# - capabilities.json de python-escpos (chargé via importlib.resources à
+#   l'import de escpos.printer — absent du bundle, l'import plante) ;
+# - métadonnées du paquet (lecture de version via importlib.metadata).
+DATAS = [
+    ('assets', 'assets'),
+    *collect_data_files('webview'),
+    *collect_data_files('escpos'),
+    *copy_metadata('python-escpos'),
+]
 
 a = Analysis(
     ['main.py'],

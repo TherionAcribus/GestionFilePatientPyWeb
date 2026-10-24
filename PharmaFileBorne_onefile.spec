@@ -8,7 +8,7 @@
 # PharmaFileBorne.spec : tests/test_build_spec.py compare les deux fichiers
 # et échoue en cas de divergence.
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, copy_metadata
 
 HIDDENIMPORTS = [
     'webview.platforms.qt',
@@ -25,7 +25,12 @@ DEV_EXCLUDES = [
     'pytest', 'pyinstaller', 'tkinter',
 ]
 
-DATAS = [('assets', 'assets'), *collect_data_files('webview')]
+DATAS = [
+    ('assets', 'assets'),
+    *collect_data_files('webview'),
+    *collect_data_files('escpos'),
+    *copy_metadata('python-escpos'),
+]
 
 a = Analysis(
     ['main.py'],

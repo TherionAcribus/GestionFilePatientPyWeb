@@ -64,7 +64,11 @@ jobs:
           chmod +x "$BIN"
           OUT=$("$BIN" --selfcheck 2>&1) || {
             echo "$OUT"
-            echo "::error::selfcheck a échoué : $(echo "$OUT" | tail -1)"
+            # Le traceback remonte dans l'annotation (visible sans accès aux
+            # logs) : échappement % et CRLF, puis \n -> %0A.
+            DETAIL=$(echo "$OUT" | tail -12 \
+              | sed 's/%/%25/g; s/\r/%0D/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error::selfcheck a échoué :%0A$DETAIL"
             exit 1
           }
           echo "$OUT"

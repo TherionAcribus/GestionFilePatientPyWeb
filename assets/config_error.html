@@ -8,6 +8,9 @@
 
   ATTENTION : ne jamais écrire un marqueur (double blanc soulignés autour du nom)
   dans ce commentaire — il serait substitué comme les autres.
+
+  Charte Flowelis : fond « danger-bg » #FDEDEB, titre « danger » #B42318,
+  texte bleu profond #173B4B, symbole couleur.
 -->
 <html lang="fr">
 <head>
@@ -16,23 +19,25 @@
 <style>
   html, body {
     margin: 0; height: 100%; width: 100%;
-    background: #3f0d0d; color: #fee2e2;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #FDEDEB; color: #173B4B;
+    font-family: Manrope, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     cursor: none; user-select: none;
   }
   .wrap {
     height: 100%; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center; padding: 2rem;
   }
-  h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 1rem; }
-  p  { font-size: 1.3rem; margin: 0.3rem 0; color: #fecaca; max-width: 44rem; }
-  ul { text-align: left; font-size: 1.15rem; color: #fecaca; max-width: 44rem;
+  .logo { width: 110px; height: auto; margin-bottom: 1.5rem; }
+  h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 1rem; color: #B42318; }
+  p  { font-size: 1.3rem; margin: 0.3rem 0; max-width: 44rem; }
+  ul { text-align: left; font-size: 1.15rem; color: #B42318; max-width: 44rem;
        margin: 1rem auto; line-height: 1.5; }
   li { margin: 0.35rem 0; }
 </style>
 </head>
 <body oncontextmenu="return false">
   <div class="wrap">
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 304 292" role="img" aria-label="Flowelis"><g transform="translate(24 24)"><path d="M50 60 C79 22 117 0 154 0 C214 0 256 46 256 111 L256 235 Q256 244 247 242 L179 231 C166 229 160 223 160 212 L160 113 C160 74 134 48 100 48 C83 48 67 52 55 61 Q48 66 50 60 Z" fill="#173B4B"/><circle cx="70" cy="110" r="34" fill="#30A99A"/><path d="M0 231 C0 185 33 160 91 152 C100 151 105 156 105 165 L105 211 C105 226 93 232 78 235 L13 243 Q0 246 0 231 Z" fill="#173B4B"/></g></svg>
     <h1>Configuration invalide</h1>
     <p>La borne refuse de démarrer pour les raisons suivantes :</p>
     <ul>__ERROR_ITEMS__</ul>

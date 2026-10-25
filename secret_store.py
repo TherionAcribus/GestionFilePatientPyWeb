@@ -23,7 +23,12 @@ import logging
 logger = logging.getLogger("borne.secret_store")
 
 # Namespace de la borne dans le magasin d'identifiants du système.
-SERVICE_NAME = "GestionFile-Borne"
+SERVICE_NAME = "Flowelis-Borne"
+
+# Anciens namespaces (renommage de marque), du plus récent au plus ancien. Un
+# secret encore enregistré sous l'un d'eux est recopié sous le nom courant à la
+# première lecture ; l'entrée d'origine est conservée (retour arrière possible).
+LEGACY_SERVICE_NAMES = ("GestionFile-Borne",)
 
 # Champs de ``Settings`` traités comme secrets (jamais écrits en clair).
 SECRET_FIELDS = ("app_secret",)
@@ -59,15 +64,36 @@ def available() -> bool:
     return "fail" not in module
 
 
-def get_secret(name) -> str:
-    """Valeur du secret ``name`` dans le magasin, ou chaîne vide."""
+def _get_secret_from(service, name) -> str:
+    """Valeur du secret ``name`` sous le namespace ``service``, vide si
+    keyring est indisponible ou si la lecture échoue."""
     if not _KEYRING_IMPORTED:
         return ""
     try:
-        return keyring.get_password(SERVICE_NAME, name) or ""
+        return keyring.get_password(service, name) or ""
     except Exception as exc:  # pragma: no cover - dépend du backend
         logger.warning("Lecture keyring impossible pour %r (%s).", name, exc)
         return ""
+
+
+def get_secret(name) -> str:
+    """Valeur du secret ``name`` dans le magasin, ou chaîne vide.
+
+    Si rien n'est enregistré sous le namespace courant, les anciens namespaces
+    (``LEGACY_SERVICE_NAMES``) sont consultés : une valeur trouvée est recopiée
+    sous le nom courant puis renvoyée."""
+    value = _get_secret_from(SERVICE_NAME, name)
+    if value:
+        return value
+    for service in LEGACY_SERVICE_NAMES:
+        value = _get_secret_from(service, name)
+        if value:
+            if set_secret(name, value):
+                logger.info(
+                    "Secret %r repris depuis l'ancien namespace « %s ».",
+                    name, service)
+            return value
+    return ""
 
 
 def set_secret(name, value) -> bool:

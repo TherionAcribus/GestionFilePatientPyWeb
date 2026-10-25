@@ -1,9 +1,9 @@
-# Build « dossier » de la borne : produit dist/PharmaFileBorne/ (binaire +
+# Build « dossier » de la borne : produit dist/FlowelisBorne/ (binaire +
 # _internal/). Format recommandé : démarrage plus rapide qu'un exe unique.
-# Voir COMPILATION.md ; la variante onefile est PharmaFileBorne_onefile.spec.
+# Voir COMPILATION.md ; la variante onefile est FlowelisBorne_onefile.spec.
 #
 # Les listes critiques ci-dessous DOIVENT rester identiques à celles de
-# PharmaFileBorne_onefile.spec : tests/test_build_spec.py compare les deux
+# FlowelisBorne_onefile.spec : tests/test_build_spec.py compare les deux
 # fichiers et échoue en cas de divergence.
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
@@ -63,7 +63,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PharmaFileBorne',
+    name='FlowelisBorne',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -82,5 +82,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='PharmaFileBorne',
+    name='FlowelisBorne',
 )

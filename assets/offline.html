@@ -3,6 +3,7 @@
   Écran affiché LOCALEMENT par la borne (donc visible même serveur injoignable)
   tant qu'elle n'est pas opérationnelle. Voir ui_assets.offline_html().
   Aucune dépendance externe : tout est embarqué, la borne peut être hors ligne.
+  Charte Flowelis : bleu profond #173B4B, turquoise #30A99A, symbole blanc.
 -->
 <html lang="fr">
 <head>
@@ -11,27 +12,29 @@
 <style>
   html, body {
     margin: 0; height: 100%; width: 100%;
-    background: #0f172a; color: #e2e8f0;
-    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #173B4B; color: #E5F4EF;
+    font-family: Manrope, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     cursor: none; user-select: none;
   }
   .wrap {
     height: 100%; display: flex; flex-direction: column;
     align-items: center; justify-content: center; text-align: center; padding: 2rem;
   }
+  .logo { width: 110px; height: auto; margin-bottom: 1.5rem; }
   .spinner {
     width: 84px; height: 84px; margin-bottom: 2.5rem;
-    border: 8px solid rgba(226, 232, 240, 0.2);
-    border-top-color: #38bdf8; border-radius: 50%;
+    border: 8px solid rgba(229, 244, 239, 0.2);
+    border-top-color: #30A99A; border-radius: 50%;
     animation: spin 1s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   h1 { font-size: 2.6rem; font-weight: 700; margin: 0 0 1rem; }
-  p  { font-size: 1.4rem; margin: 0; color: #94a3b8; }
+  p  { font-size: 1.4rem; margin: 0; color: #D9E5E1; }
 </style>
 </head>
 <body oncontextmenu="return false">
   <div class="wrap">
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 304 292" role="img" aria-label="Flowelis"><g transform="translate(24 24)"><path d="M50 60 C79 22 117 0 154 0 C214 0 256 46 256 111 L256 235 Q256 244 247 242 L179 231 C166 229 160 223 160 212 L160 113 C160 74 134 48 100 48 C83 48 67 52 55 61 Q48 66 50 60 Z" fill="#FFFFFF"/><circle cx="70" cy="110" r="34" fill="#30A99A"/><path d="M0 231 C0 185 33 160 91 152 C100 151 105 156 105 165 L105 211 C105 226 93 232 78 235 L13 243 Q0 246 0 231 Z" fill="#FFFFFF"/></g></svg>
     <div class="spinner"></div>
     <h1>Borne hors ligne</h1>
     <p>Connexion au serveur en cours&hellip;<br>La borne sera disponible dès que possible.</p>

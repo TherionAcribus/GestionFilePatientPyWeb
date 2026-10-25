@@ -194,7 +194,58 @@ def test_windows_config_path_survives_missing_localappdata(monkeypatch, tmp_path
 
     cfg = Config()
 
-    assert cfg.config_path == tmp_path / "AppData" / "Local" / "FileAttente"
+    assert cfg.config_path == tmp_path / "AppData" / "Local" / "Flowelis"
+
+
+def test_legacy_config_dir_is_migrated(monkeypatch, tmp_path):
+    """Renommage de marque : un dossier de configuration laissé sous l'ancien
+    nom (« FileAttente ») est recopié vers « Flowelis » quand le nouveau dossier
+    n'existe pas encore ; l'original est conservé."""
+    Config._instance = None
+    monkeypatch.setattr(config_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(config_mod.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(secret_store, "available", lambda: True)
+    monkeypatch.setattr(secret_store, "get_secret", lambda name: "")
+    monkeypatch.setattr(secret_store, "set_secret", lambda name, value: True)
+
+    legacy = tmp_path / ".config" / "FileAttente"
+    (legacy / "webview").mkdir(parents=True)
+    with open(legacy / "settings.json", "w", encoding="utf-8") as f:
+        json.dump({"base_url": "http://127.0.0.1:5000", "debug": True}, f)
+
+    cfg = Config()
+
+    new_dir = tmp_path / ".config" / "Flowelis"
+    assert cfg.config_path == new_dir
+    assert cfg.settings.base_url == "http://127.0.0.1:5000"
+    assert (new_dir / "settings.json").exists()
+    assert (new_dir / "webview").is_dir()
+    # L'original reste en place (retour à une version antérieure possible).
+    assert (legacy / "settings.json").exists()
+
+
+def test_existing_new_config_dir_is_not_overwritten(monkeypatch, tmp_path):
+    """Le dossier courant prime : un dossier hérité présent en plus ne doit
+    rien écraser."""
+    Config._instance = None
+    monkeypatch.setattr(config_mod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(config_mod.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(secret_store, "available", lambda: True)
+    monkeypatch.setattr(secret_store, "get_secret", lambda name: "")
+    monkeypatch.setattr(secret_store, "set_secret", lambda name, value: True)
+
+    legacy = tmp_path / ".config" / "FileAttente"
+    legacy.mkdir(parents=True)
+    with open(legacy / "settings.json", "w", encoding="utf-8") as f:
+        json.dump({"base_url": "http://127.0.0.1:1111"}, f)
+    new_dir = tmp_path / ".config" / "Flowelis"
+    new_dir.mkdir(parents=True)
+    with open(new_dir / "settings.json", "w", encoding="utf-8") as f:
+        json.dump({"base_url": "http://127.0.0.1:2222", "debug": True}, f)
+
+    cfg = Config()
+
+    assert cfg.settings.base_url == "http://127.0.0.1:2222"
 
 
 def test_production_refuses_cleartext_when_store_unavailable(store, monkeypatch):

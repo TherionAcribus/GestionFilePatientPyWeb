@@ -51,6 +51,24 @@ def unavailable(monkeypatch):
     return calls
 
 
+def test_legacy_service_name_is_migrated(monkeypatch):
+    """Un secret encore enregistré sous l'ancien namespace (« GestionFile-Borne »,
+    avant le renommage Flowelis) est recopié sous le namespace courant à la
+    première lecture ; l'entrée d'origine est conservée."""
+    store = {}
+    monkeypatch.setattr(secret_store, "_get_secret_from",
+                        lambda service, name: store.get((service, name), ""))
+    monkeypatch.setattr(
+        secret_store, "set_secret",
+        lambda name, value: (
+            store.__setitem__((secret_store.SERVICE_NAME, name), value), True)[1])
+
+    store[("GestionFile-Borne", "app_secret")] = "sec-ancien"
+    assert secret_store.get_secret("app_secret") == "sec-ancien"
+    assert store[(secret_store.SERVICE_NAME, "app_secret")] == "sec-ancien"
+    assert store[("GestionFile-Borne", "app_secret")] == "sec-ancien"
+
+
 def test_secret_fields_are_the_app_secret_only():
     # Le compte utilisateur (password) n'existe plus : seul le secret
     # applicatif — identité machine de la borne — quitte settings.json.

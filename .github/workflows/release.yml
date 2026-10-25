@@ -33,19 +33,19 @@ jobs:
       - name: Installer les dépendances de build
         run: pip install -r requirements-build.txt
 
-      # Binaire unique autonome -> dist/PharmaFileBorne, déplacé aussitôt :
-      # le build dossier écrit ensuite dans dist/PharmaFileBorne/ (même nom).
+      # Binaire unique autonome -> dist/FlowelisBorne, déplacé aussitôt :
+      # le build dossier écrit ensuite dans dist/FlowelisBorne/ (même nom).
       - name: Compiler le binaire autonome (onefile)
         run: |
-          pyinstaller --noconfirm --clean PharmaFileBorne_onefile.spec
+          pyinstaller --noconfirm --clean FlowelisBorne_onefile.spec
           mkdir -p release-assets
-          mv dist/PharmaFileBorne "release-assets/PharmaFileBorne-${{ github.ref_name }}-linux-x86_64"
+          mv dist/FlowelisBorne "release-assets/FlowelisBorne-${{ github.ref_name }}-linux-x86_64"
 
       - name: Compiler le dossier (onedir) + archive
         run: |
-          pyinstaller --noconfirm --clean PharmaFileBorne.spec
-          tar -czf "release-assets/PharmaFileBorne-${{ github.ref_name }}-linux-x86_64.tar.gz" \
-            -C dist PharmaFileBorne
+          pyinstaller --noconfirm --clean FlowelisBorne.spec
+          tar -czf "release-assets/FlowelisBorne-${{ github.ref_name }}-linux-x86_64.tar.gz" \
+            -C dist FlowelisBorne
 
       # Test de fumée : `--selfcheck` importe les modules chargés
       # dynamiquement (backend Qt de pywebview, backends keyring, escpos/usb)
@@ -60,7 +60,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libusb-1.0-0 libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
             libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2 libxcb-cursor0
-          BIN="release-assets/PharmaFileBorne-${{ github.ref_name }}-linux-x86_64"
+          BIN="release-assets/FlowelisBorne-${{ github.ref_name }}-linux-x86_64"
           chmod +x "$BIN"
           OUT=$("$BIN" --selfcheck 2>&1) || {
             echo "$OUT"

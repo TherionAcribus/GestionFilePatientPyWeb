@@ -17,11 +17,11 @@ pip install -r requirements-build.txt
 
 Deux fichiers `.spec`, et seulement eux, existent à la racine :
 
-- `PharmaFileBorne.spec` : build « dossier », sortie dans
-  `dist/PharmaFileBorne/` (binaire + `_internal/`). Format recommandé :
+- `FlowelisBorne.spec` : build « dossier », sortie dans
+  `dist/FlowelisBorne/` (binaire + `_internal/`). Format recommandé :
   démarrage rapide.
-- `PharmaFileBorne_onefile.spec` : build « binaire unique », sortie
-  `dist/PharmaFileBorne`. Utilisé par la release GitHub pour un déploiement
+- `FlowelisBorne_onefile.spec` : build « binaire unique », sortie
+  `dist/FlowelisBorne`. Utilisé par la release GitHub pour un déploiement
   en un seul fichier. Démarrage plus lent (extraction dans `/tmp`).
 
 Les deux specs partagent les mêmes listes critiques (`HIDDENIMPORTS`,
@@ -44,11 +44,11 @@ Points spécifiques au bundle :
 ## 3. Lancer la compilation
 
 ```bash
-pyinstaller --noconfirm --clean PharmaFileBorne.spec          # dossier
-pyinstaller --noconfirm --clean PharmaFileBorne_onefile.spec  # binaire unique
+pyinstaller --noconfirm --clean FlowelisBorne.spec          # dossier
+pyinstaller --noconfirm --clean FlowelisBorne_onefile.spec  # binaire unique
 ```
 
-Résultat : `dist/PharmaFileBorne/` (dossier) ou `dist/PharmaFileBorne`
+Résultat : `dist/FlowelisBorne/` (dossier) ou `dist/FlowelisBorne`
 (binaire unique).
 
 ## 4. Release GitHub (compilation automatisée)
@@ -63,8 +63,8 @@ git push origin v1.0.0
 
 La release contient :
 
-- `PharmaFileBorne-<tag>-linux-x86_64.tar.gz` : le dossier complet — format recommandé ;
-- `PharmaFileBorne-<tag>-linux-x86_64` : le binaire autonome unique.
+- `FlowelisBorne-<tag>-linux-x86_64.tar.gz` : le dossier complet — format recommandé ;
+- `FlowelisBorne-<tag>-linux-x86_64` : le binaire autonome unique.
 
 Le workflow exécute aussi un test de fumée avant de publier : le binaire est
 lancé avec `--selfcheck`, un mode diagnostic qui importe les modules chargés
@@ -85,7 +85,7 @@ système. Sur la borne cible, il reste nécessaire :
   libxcb-cursor0 libusb-1.0-0` (identiques à ceux d'`install.sh`) ;
 - la **règle udev** pour l'imprimante ESC/POS (accès USB sans root) ;
 - le **démarrage automatique** à l'ouverture de session ;
-- la configuration (`~/.config/FileAttente/settings.json` + secrets dans le
+- la configuration (`~/.config/Flowelis/settings.json` + secrets dans le
   trousseau) — via `config-editor.py` depuis le dépôt, ou en éditant le
   fichier.
 

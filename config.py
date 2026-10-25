@@ -35,6 +35,11 @@ INSECURE_APP_SECRETS = frozenset({"", "votre_secret_app", "changeme",
 # autorisent le HTTP en clair. Tout le reste doit passer en HTTPS.
 _LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
 
+#: Anciens noms du dossier de configuration (renommage de marque), du plus
+#: récent au plus ancien. Si le dossier courant n'existe pas mais qu'un dossier
+#: hérité existe, son contenu est repris intégralement — l'original conservé.
+LEGACY_APP_DIRNAMES = ("FileAttente",)
+
 # Identifiant USB : hexadécimal 16 bits, avec ou sans préfixe 0x (ex. 0x04b8).
 _USB_ID_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]{1,4}$")
 
@@ -371,12 +376,13 @@ class Config:
         conserve des valeurs par défaut en mémoire et on remplit ``load_error`` :
         la borne refusera de démarrer proprement au lieu de planter avant même
         l'affichage de l'écran de diagnostic."""
-        self.app_name = "FileAttente"
+        self.app_name = "Flowelis"
         self.settings = Settings()
         self.load_error = None
         self.secret_store_error = None
         try:
             self.config_path = self._get_config_path()
+            self._migrate_legacy_config_dir()
             self._ensure_config_dir()
         except Exception as e:
             logger.exception("Répertoire de configuration indisponible.")
@@ -389,8 +395,8 @@ class Config:
             return
         self.load_settings()
 
-    def _get_config_path(self) -> Path:
-        """Détermine le chemin de configuration selon le système d'exploitation"""
+    def _config_dir(self, dirname: str) -> Path:
+        """Chemin du dossier de configuration ``dirname`` selon le système."""
         system = platform.system()
 
         if system == "Windows":
@@ -398,14 +404,48 @@ class Config:
             # retomber alors explicitement sur le profil utilisateur.
             local_appdata = os.environ.get(
                 "LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
-            base_path = os.path.join(local_appdata, self.app_name)
+            base_path = os.path.join(local_appdata, dirname)
         elif system == "Linux":
             # Sur Linux, utilise ~/.config
-            base_path = os.path.join(str(Path.home()), ".config", self.app_name)
+            base_path = os.path.join(str(Path.home()), ".config", dirname)
         else:
             raise OSError(f"Système d'exploitation non supporté: {system}")
 
         return Path(base_path)
+
+    def _get_config_path(self) -> Path:
+        """Détermine le chemin de configuration selon le système d'exploitation"""
+        return self._config_dir(self.app_name)
+
+    def _migrate_legacy_config_dir(self):
+        """Reprend la configuration laissée sous un ancien nom de dossier.
+
+        Appelé AVANT la création du dossier courant : si celui-ci n'existe pas
+        et qu'un dossier hérité (``LEGACY_APP_DIRNAMES``) existe, tout son
+        contenu est copié (settings.json, profil WebView). L'original est
+        conservé : un retour à une version antérieure reste possible. Un échec
+        de copie est journalisé sans interrompre l'initialisation — la borne
+        repart alors sur une configuration vierge."""
+        if self.config_path.exists():
+            return
+        for dirname in LEGACY_APP_DIRNAMES:
+            try:
+                legacy = self._config_dir(dirname)
+            except OSError:
+                continue
+            if not legacy.is_dir():
+                continue
+            try:
+                shutil.copytree(legacy, self.config_path)
+            except OSError:
+                logger.exception(
+                    "Reprise du dossier de configuration « %s » impossible.",
+                    legacy)
+                continue
+            logger.info(
+                "Configuration reprise depuis %s (dossier d'origine conservé).",
+                legacy)
+            return
 
     def _ensure_config_dir(self):
         """Crée le répertoire de configuration s'il n'existe pas"""

@@ -27,7 +27,7 @@ class ConfigEditor(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Configuration File d'attente")
+        self.title("Configuration — Flowelis Borne")
         self.config = Config()
 
         # Configuration de la fenêtre

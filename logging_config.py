@@ -30,7 +30,7 @@ import threading
 from pathlib import Path
 from typing import ClassVar
 
-APP_NAME = "FileAttente"  # cohérent avec config.Config.app_name
+APP_NAME = "Flowelis"  # cohérent avec config.Config.app_name
 LOG_FILENAME = "borne.log"
 
 # Rotation locale : ~5 Mo au total (1 Mo × 5 sauvegardes). Suffisant pour une

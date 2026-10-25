@@ -1,9 +1,9 @@
 """Configuration de build PyInstaller de la borne.
 
 Deux fichiers .spec, et seulement eux, doivent exister :
-- ``PharmaFileBorne.spec``         : build « dossier » (dist/PharmaFileBorne/)
-- ``PharmaFileBorne_onefile.spec`` : build « binaire unique »
-  (dist/PharmaFileBorne), utilisé par le workflow de release
+- ``FlowelisBorne.spec``         : build « dossier » (dist/FlowelisBorne/)
+- ``FlowelisBorne_onefile.spec`` : build « binaire unique »
+  (dist/FlowelisBorne), utilisé par le workflow de release
 
 L'application comptoir a déjà subi un spec obsolète (sans les backends
 keyring ni les ressources) qui produisait un binaire silencieusement dégradé :
@@ -15,8 +15,8 @@ import ast
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPECS = ["PharmaFileBorne.spec", "PharmaFileBorne_onefile.spec"]
-SPEC = os.path.join(APP_DIR, "PharmaFileBorne.spec")
+SPECS = ["FlowelisBorne.spec", "FlowelisBorne_onefile.spec"]
+SPEC = os.path.join(APP_DIR, "FlowelisBorne.spec")
 
 
 def _spec_source(path=SPEC):
@@ -82,5 +82,5 @@ def test_backends_keyring_forces():
 
 def test_listes_critiques_synchronisees():
     reference = _critical_lists(SPEC)
-    onefile = _critical_lists(os.path.join(APP_DIR, "PharmaFileBorne_onefile.spec"))
+    onefile = _critical_lists(os.path.join(APP_DIR, "FlowelisBorne_onefile.spec"))
     assert onefile == reference

@@ -1,7 +1,7 @@
-# Borne patient — PharmaFile (GestionFilePatientPyWeb)
+# Borne patient — Flowelis (GestionFilePatientPyWeb)
 
 Application de **borne tactile** en libre-service pour la prise de ticket
-patient. Elle affiche la page `/patient` du serveur PharmaFile dans une fenêtre
+patient. Elle affiche la page `/patient` du serveur Flowelis dans une fenêtre
 kiosque (pywebview + Qt) et pilote l'**imprimante ticket ESC/POS** (USB).
 
 - Interface kiosque plein écran, tactile, curseur masqué.
@@ -14,7 +14,7 @@ kiosque (pywebview + Qt) et pilote l'**imprimante ticket ESC/POS** (USB).
 ## 1. Prérequis
 
 - **Python 3.11+** (3.12 recommandé).
-- Un **serveur PharmaFile** joignable (voir `base_url` dans la configuration).
+- Un **serveur Flowelis** joignable (voir `base_url` dans la configuration).
 - Une **imprimante ticket USB** compatible ESC/POS (par défaut Epson TM-T88).
 - Un **backend Qt** pour pywebview (PySide6, fourni dans les dépendances).
 
@@ -108,7 +108,7 @@ que celle posée par `install.sh` :
 
 ```bash
 echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="04b8", ATTRS{idProduct}=="0202", MODE="0664", GROUP="plugdev", TAG+="uaccess"' \
-  | sudo tee /etc/udev/rules.d/99-pharmafile-printer.rules
+  | sudo tee /etc/udev/rules.d/99-flowelis-printer.rules
 
 sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
 sudo usermod -a -G plugdev "$USER"    # puis déconnexion/reconnexion
@@ -123,8 +123,8 @@ sudo usermod -a -G plugdev "$USER"    # puis déconnexion/reconnexion
 La configuration est stockée dans un fichier `settings.json` de l'espace
 utilisateur (jamais committé) :
 
-- Linux : `~/.config/FileAttente/settings.json`
-- Windows : `%LOCALAPPDATA%\FileAttente\settings.json`
+- Linux : `~/.config/Flowelis/settings.json`
+- Windows : `%LOCALAPPDATA%\Flowelis\settings.json`
 
 Un modèle est fourni : [`settings.example.json`](settings.example.json).
 
@@ -208,21 +208,21 @@ redémarrage manuel.
 ### 5.1 Démarrage automatique — Linux
 
 **Option A : session graphique (XDG autostart)** — le plus simple pour un
-kiosque. Créez `~/.config/autostart/pharmafile-borne.desktop` :
+kiosque. Créez `~/.config/autostart/flowelis-borne.desktop` :
 
 ```ini
 [Desktop Entry]
 Type=Application
-Name=PharmaFile Borne
+Name=Flowelis Borne
 Exec=/chemin/vers/env/bin/python /chemin/vers/GestionFilePatientPyWeb/main.py
 X-GNOME-Autostart-enabled=true
 ```
 
-**Option B : service systemd utilisateur** (`~/.config/systemd/user/pharmafile-borne.service`) :
+**Option B : service systemd utilisateur** (`~/.config/systemd/user/flowelis-borne.service`) :
 
 ```ini
 [Unit]
-Description=Borne PharmaFile
+Description=Borne Flowelis
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -238,7 +238,7 @@ WantedBy=graphical-session.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now pharmafile-borne.service
+systemctl --user enable --now flowelis-borne.service
 loginctl enable-linger "$USER"   # démarrage sans session interactive ouverte
 ```
 
@@ -259,7 +259,7 @@ loginctl enable-linger "$USER"   # démarrage sans session interactive ouverte
 
 La borne journalise via `logging` (module [`logging_config.py`](logging_config.py)) :
 
-- Fichier tournant : `<espace utilisateur>/FileAttente/logs/borne.log`
+- Fichier tournant : `<espace utilisateur>/Flowelis/logs/borne.log`
   (rotation locale ~5 Mo : 1 Mo × 5 sauvegardes).
 - Format : `horodatage [NIVEAU] composant [job=…] message`.
 - Les **secrets/jetons/mots de passe sont masqués** ; le **contenu des tickets

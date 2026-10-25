@@ -247,7 +247,7 @@ class WebViewClient:
             content_kwargs = {'html': ui_assets.offline_html()}
 
         self.window = webview.create_window(
-            title="PharmaFile",
+            title="Flowelis Borne",
             fullscreen=Config().settings.fullscreen,
             js_api=js_api,
             background_color='#FFFFFF',
@@ -850,7 +850,7 @@ if __name__ == '__main__':
     # pendant le chargement de la configuration. Le niveau est ajusté ensuite
     # selon le réglage debug.
     logging_config.setup_logging()
-    logger.info("Démarrage de la borne PharmaFile.")
+    logger.info("Démarrage de la borne Flowelis.")
     client = WebViewClient()
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()

@@ -1,11 +1,11 @@
-# Variante « onefile » de PharmaFileBorne.spec : produit un binaire unique
-# autonome (dist/PharmaFileBorne) au lieu du dossier dist/PharmaFileBorne/.
+# Variante « onefile » de FlowelisBorne.spec : produit un binaire unique
+# autonome (dist/FlowelisBorne) au lieu du dossier dist/FlowelisBorne/.
 # Utilisée par le workflow de release (.github/workflows/release.yml) pour les
 # déploiements qui veulent un seul fichier à copier ; le build « dossier »
 # reste recommandé (démarrage plus rapide, pas d'extraction dans /tmp).
 #
 # Les listes ci-dessous DOIVENT rester identiques à celles de
-# PharmaFileBorne.spec : tests/test_build_spec.py compare les deux fichiers
+# FlowelisBorne.spec : tests/test_build_spec.py compare les deux fichiers
 # et échoue en cas de divergence.
 
 from PyInstaller.utils.hooks import collect_data_files, copy_metadata
@@ -53,7 +53,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='PharmaFileBorne',
+    name='FlowelisBorne',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

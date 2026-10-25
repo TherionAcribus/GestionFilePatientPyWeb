@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh — Installation complète de la borne PharmaFile (Linux).
+# install.sh — Installation complète de la borne Flowelis (Linux).
 #
 #   bash install.sh               Installe tout puis ouvre l'éditeur de config.
 #   bash install.sh --no-editor   Idem, sans ouvrir l'éditeur.
@@ -11,7 +11,7 @@
 #
 # Il restera à saisir dans l'éditeur uniquement :
 #   - l'URL du serveur (base_url)
-#   - le secret d'application (fourni par l'administrateur PharmaFile)
+#   - le secret d'application (fourni par l'administrateur Flowelis)
 #
 # Le script est idempotent : il peut être relancé sans risque.
 
@@ -42,7 +42,7 @@ die()  { echo "${C_ERR}  ✘ $*${C_RST}" >&2; exit 1; }
 [ "$(uname -s)" = "Linux" ] || die "Ce script ne fonctionne que sous Linux."
 command -v sudo >/dev/null 2>&1 || die "sudo est requis (installez-le ou connectez-vous en administrateur)."
 
-info "Installation de la borne PharmaFile"
+info "Installation de la borne Flowelis"
 echo "    Dossier : $ROOT"
 sudo -v || die "Mot de passe sudo requis pour installer les paquets système."
 # Garde le ticket sudo actif pendant toute l'installation.
@@ -141,11 +141,17 @@ for v, p in found:
 PY
 )"
 
-SETTINGS_JSON="$HOME/.config/FileAttente/settings.json"
+SETTINGS_JSON="$HOME/.config/Flowelis/settings.json"
+# Ancien emplacement (avant le renommage Flowelis) : lu en secours pour
+# reprendre les identifiants imprimante déjà configurés.
+LEGACY_SETTINGS_JSON="$HOME/.config/FileAttente/settings.json"
+SETTINGS_READ="$SETTINGS_JSON"
+[ ! -f "$SETTINGS_READ" ] && [ -f "$LEGACY_SETTINGS_JSON" ] \
+    && SETTINGS_READ="$LEGACY_SETTINGS_JSON"
 VID=""; PID=""
 # Priorité : identifiants déjà configurés dans settings.json.
-if [ -f "$SETTINGS_JSON" ]; then
-    read -r VID PID < <("$PYBIN" - "$SETTINGS_JSON" <<'PY' || true
+if [ -f "$SETTINGS_READ" ]; then
+    read -r VID PID < <("$PYBIN" - "$SETTINGS_READ" <<'PY' || true
 import json, sys
 try:
     d = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -170,8 +176,10 @@ fi
 
 # ---------- 5. règle udev ----------
 
-UDEV_RULE="/etc/udev/rules.d/99-pharmafile-printer.rules"
+UDEV_RULE="/etc/udev/rules.d/99-flowelis-printer.rules"
 info "Règle udev pour l'imprimante (accès sans root)"
+# Retire l'ancienne règle nommée d'après la marque précédente, si présente.
+sudo rm -f /etc/udev/rules.d/99-pharmafile-printer.rules
 printf 'SUBSYSTEM=="usb", ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", MODE="0664", GROUP="plugdev", TAG+="uaccess"\n' \
     "${VID#0x}" "${PID#0x}" | sudo tee "$UDEV_RULE" >/dev/null
 sudo udevadm control --reload-rules
@@ -207,33 +215,47 @@ fi
 
 info "Démarrage automatique de la borne à l'ouverture de session"
 mkdir -p "$HOME/.config/autostart"
-cat > "$HOME/.config/autostart/pharmafile-borne.desktop" <<EOF
+# Retire l'ancienne entrée (marque précédente) pour éviter un double lancement.
+rm -f "$HOME/.config/autostart/pharmafile-borne.desktop"
+cat > "$HOME/.config/autostart/flowelis-borne.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=PharmaFile Borne
+Name=Flowelis Borne
+Comment=Gestion de file et accueil
 Exec=$PYBIN $ROOT/main.py
+Icon=flowelis
 X-GNOME-Autostart-enabled=true
 EOF
-ok "Entrée autostart créée (~/.config/autostart/pharmafile-borne.desktop)."
+ok "Entrée autostart créée (~/.config/autostart/flowelis-borne.desktop)."
+
+# Icône de marque dans le thème hicolor (référencée par Icon=flowelis).
+if [ -f "$ROOT/assets/flowelis.png" ]; then
+    ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "$ICON_DIR"
+    cp "$ROOT/assets/flowelis.png" "$ICON_DIR/flowelis.png"
+    gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+    ok "Icône Flowelis installée ($ICON_DIR/flowelis.png)."
+fi
 
 # ---------- 8. raccourci « Configuration » sur le bureau ----------
 
 DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
 if [ -d "$DESKTOP_DIR" ]; then
-    cat > "$DESKTOP_DIR/pharmafile-configuration.desktop" <<EOF
+    rm -f "$DESKTOP_DIR/pharmafile-configuration.desktop"
+    cat > "$DESKTOP_DIR/flowelis-configuration.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Configuration borne PharmaFile
+Name=Configuration Flowelis Borne
 Comment=Modifier l'URL du serveur, le secret et l'imprimante
 Exec=$PYBIN $ROOT/config-editor.py
 Path=$ROOT
-Icon=preferences-system
+Icon=flowelis
 Terminal=false
 EOF
-    chmod +x "$DESKTOP_DIR/pharmafile-configuration.desktop"
+    chmod +x "$DESKTOP_DIR/flowelis-configuration.desktop"
     # Autoriser le lancement sur les bureaux GNOME récents (best effort).
-    gio set "$DESKTOP_DIR/pharmafile-configuration.desktop" metadata::trusted true 2>/dev/null || true
-    ok "Raccourci « Configuration borne PharmaFile » créé sur le bureau."
+    gio set "$DESKTOP_DIR/flowelis-configuration.desktop" metadata::trusted true 2>/dev/null || true
+    ok "Raccourci « Configuration Flowelis Borne » créé sur le bureau."
 fi
 
 # ---------- 9. bilan ----------
@@ -244,7 +266,7 @@ cat <<EOF
 
   Il reste 2 champs à renseigner dans l'éditeur de configuration :
     • URL du serveur (base_url)
-    • Secret d'application (app_secret) — fourni par l'administrateur PharmaFile
+    • Secret d'application (app_secret) — fourni par l'administrateur Flowelis
 
   Puis cliquez « Tester le serveur » et « Tester l'imprimante ».
 EOF

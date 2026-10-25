@@ -1,7 +1,7 @@
 # Borne — dépendances de BUILD (génération du binaire Linux avec PyInstaller).
 #
 # Installe le runtime puis l'outillage de packaging.
-# Compilation : voir COMPILATION.md (`pyinstaller --noconfirm --clean PharmaFileBorne.spec`).
+# Compilation : voir COMPILATION.md (`pyinstaller --noconfirm --clean FlowelisBorne.spec`).
 
 -r requirements.txt
 

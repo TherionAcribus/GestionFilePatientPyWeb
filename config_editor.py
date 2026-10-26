@@ -29,6 +29,9 @@ PIN_MAX_ATTEMPTS = 3
 # Sans saisie pendant ce délai, la fenêtre du PIN se ferme : une touche de
 # maintenance pressée par erreur ne laisse pas la borne hors service.
 PIN_DIALOG_TIMEOUT_S = 60
+# Même garde pour la fenêtre de choix de maintenance : sans réponse, la
+# borne reprend son service d'elle-même.
+ACTION_DIALOG_TIMEOUT_S = 60
 
 # Période de vérification de l'inactivité de l'éditeur.
 _IDLE_CHECK_MS = 5000
@@ -256,8 +259,8 @@ class ConfigEditor(tk.Tk):
         tk.Label(
             parent,
             text=(f"Touche {MAINTENANCE_KEY} sur un clavier branché à la "
-                  "borne : ouvre cette configuration, puis relance la borne "
-                  "à la fermeture. Code PIN facultatif (chiffres "
+                  "borne : propose d'ouvrir cette configuration ou "
+                  "d'éteindre la borne. Code PIN facultatif (chiffres "
                   f"uniquement, {maintenance_pin.PIN_MIN_LENGTH} à "
                   f"{maintenance_pin.PIN_MAX_LENGTH}) ; laissez les champs "
                   "vides pour ne rien changer."),
@@ -303,7 +306,7 @@ class ConfigEditor(tk.Tk):
             status = "illisible — à redéfinir ou à supprimer"
         else:
             status = (f"aucun ({MAINTENANCE_KEY} ouvre directement la "
-                      "configuration)")
+                      "maintenance)")
         self._pin_status_label.config(text=status)
         self._pin_remove_check.config(state="normal" if stored else "disabled")
 
@@ -848,6 +851,96 @@ def ask_maintenance_pin(stored_hash) -> bool:
     dialog = MaintenancePinDialog(stored_hash)
     dialog.mainloop()
     return dialog.granted
+
+
+class MaintenanceActionDialog(tk.Tk):
+    """Suite à donner après la touche de maintenance.
+
+    ``action`` vaut ``maintenance_pin.MAINTENANCE_ACTION_CONFIGURE`` ou
+    ``MAINTENANCE_ACTION_SHUTDOWN`` selon le bouton choisi ; il reste None
+    sur annulation, Échap ou inactivité — la borne repart alors en service.
+    « Éteindre la borne » demande confirmation : un tap de trop sur l'écran
+    tactile ne doit pas arrêter la borne pour la journée."""
+
+    def __init__(self, timeout_s=ACTION_DIALOG_TIMEOUT_S):
+        super().__init__()
+        self.title("Maintenance — Flowelis Borne")
+        self.resizable(False, False)
+        self.action = None
+        self._timeout_s = timeout_s
+        self._last_activity = time.monotonic()
+
+        frame = ttk.Frame(self, padding=24)
+        frame.pack()
+        ttk.Label(frame, text="Maintenance de la borne",
+                  font=('Helvetica', 12, 'bold')).pack(anchor="w")
+        tk.Label(
+            frame, justify="left", wraplength=400,
+            text=("La borne est arrêtée. Choisissez la suite — sans "
+                  "réponse, elle reprend son service d'elle-même."),
+        ).pack(anchor="w", pady=(8, 0))
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(pady=(14, 0), fill="x")
+        ttk.Button(buttons, text="Reprendre le service",
+                   command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Éteindre la borne",
+                   command=self._shutdown).pack(side=tk.RIGHT, padx=(0, 6))
+        self._config_button = ttk.Button(
+            buttons, text="Ouvrir la configuration",
+            command=self._configure)
+        self._config_button.pack(side=tk.RIGHT, padx=(0, 6))
+
+        self.bind("<Return>", lambda _e: self._configure())
+        self.bind("<KP_Enter>", lambda _e: self._configure())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        for sequence in ("<KeyPress>", "<ButtonPress>", "<Motion>",
+                         "<MouseWheel>"):
+            self.bind_all(sequence, self._note_activity, add="+")
+
+        # Centré à l'écran (la borne vient de fermer sa fenêtre plein écran).
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - self.winfo_reqwidth()) // 2
+        y = (self.winfo_screenheight() - self.winfo_reqheight()) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _bring_to_front(self)
+        self.after(100, self._config_button.focus_force)
+        self.after(1000, self._check_timeout)
+
+    def destroy(self):
+        _cancel_pending_callbacks(self)
+        super().destroy()
+
+    def _note_activity(self, _event=None):
+        self._last_activity = time.monotonic()
+
+    def _check_timeout(self):
+        if time.monotonic() - self._last_activity >= self._timeout_s:
+            logger.info("Choix de maintenance abandonné (inactivité) : "
+                        "la borne reprend son service.")
+            self.destroy()
+            return
+        self.after(1000, self._check_timeout)
+
+    def _configure(self):
+        self.action = maintenance_pin.MAINTENANCE_ACTION_CONFIGURE
+        self.destroy()
+
+    def _shutdown(self):
+        if not messagebox.askyesno(
+                "Éteindre la borne",
+                "La borne restera arrêtée jusqu'à sa prochaine ouverture.\n\n"
+                "Éteindre la borne ?", parent=self):
+            return
+        self.action = maintenance_pin.MAINTENANCE_ACTION_SHUTDOWN
+        self.destroy()
+
+
+def ask_maintenance_action():
+    """Affiche le choix de maintenance ; renvoie l'action choisie ou None."""
+    dialog = MaintenanceActionDialog()
+    dialog.mainloop()
+    return dialog.action
 
 
 if __name__ == "__main__":

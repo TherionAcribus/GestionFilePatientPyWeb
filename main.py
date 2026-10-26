@@ -1024,9 +1024,10 @@ class WebViewClient:
     def request_maintenance(self):
         """Touche de maintenance pressée : ferme la fenêtre kiosque.
 
-        La suite (code PIN, éditeur, relance) se fait APRÈS la boucle Qt, dans
-        ``__main__`` : Tk et Qt ne cohabitent pas dans une même boucle, et une
-        borne relancée repart d'une configuration relue proprement."""
+        La suite (code PIN, choix maintenance, éditeur, relance ou
+        extinction) se fait APRÈS la boucle Qt, dans ``__main__`` : Tk et
+        Qt ne cohabitent pas dans une même boucle, et une borne relancée
+        repart d'une configuration relue proprement."""
         if self.maintenance_requested:
             return
         self.maintenance_requested = True
@@ -1232,17 +1233,40 @@ def _maintenance_pin_granted(stored_hash):
         return False
 
 
-def _run_maintenance():
-    """Touche de maintenance : code PIN éventuel, puis éditeur.
+def _ask_maintenance_action():
+    """Demande la suite à donner (configuration, extinction ou reprise).
 
-    Appelé après la fermeture de la fenêtre kiosque ; la borne est relancée
-    ensuite dans tous les cas (PIN refusé, éditeur annulé ou enregistré)."""
+    Renvoie la constante d'action choisie, ou None si la fenêtre n'a pas pu
+    s'afficher ou a été abandonnée — la borne reprend alors son service."""
+    try:
+        import config_editor
+        return config_editor.ask_maintenance_action()
+    except Exception:
+        # FRONTIÈRE : Tk absent ou en panne — on reprend plutôt que laisser
+        # la borne arrêtée sans écran.
+        logger.exception("Fenêtre de choix de maintenance indisponible.")
+        return None
+
+
+def _run_maintenance():
+    """Touche de maintenance : code PIN éventuel, puis action choisie.
+
+    Appelé après la fermeture de la fenêtre kiosque. Renvoie True si la
+    borne doit être relancée — partout sauf après un choix explicite
+    « Éteindre la borne »."""
     if not _maintenance_pin_granted(Config().settings.maintenance_pin_hash):
         logger.info("Accès maintenance non accordé : relance de la borne.")
-        return
-    logger.info("Accès maintenance accordé : ouverture de la configuration.")
-    _launch_config_editor(kiosk_follows=True,
-                          idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S)
+        return True
+    action = _ask_maintenance_action()
+    if action == maintenance_pin.MAINTENANCE_ACTION_SHUTDOWN:
+        logger.info("Extinction de la borne demandée (touche de maintenance).")
+        return False
+    if action == maintenance_pin.MAINTENANCE_ACTION_CONFIGURE:
+        logger.info("Accès maintenance accordé : ouverture de la configuration.")
+        _launch_config_editor(kiosk_follows=True,
+                              idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S)
+    # Annulation, inactivité ou fenêtre en panne : la borne reprend.
+    return True
 
 
 #: Options qui font une action puis quittent, sans lancer la borne.
@@ -1423,7 +1447,7 @@ if __name__ == '__main__':
     client.run()
 
     # Touche de maintenance : la fenêtre s'est fermée pour laisser place à la
-    # configuration ; la borne est relancée ensuite, quoi qu'il arrive.
-    if client.maintenance_requested:
-        _run_maintenance()
+    # maintenance ; la borne est relancée sauf si l'extinction a été choisie
+    # (_restart_kiosk ne revient pas — il termine le processus).
+    if client.maintenance_requested and _run_maintenance():
         _restart_kiosk()

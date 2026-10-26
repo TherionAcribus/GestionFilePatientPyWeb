@@ -1,5 +1,6 @@
 """Touche de maintenance (F10) : raccourci Qt, fermeture de la borne, code
-PIN, ouverture de l'éditeur et relance.
+PIN, choix de l'action (configuration ou extinction), ouverture de
+l'éditeur et relance.
 
 PySide6 n'est pas installé en CI : le raccourci est testé avec de faux
 modules Qt ; un test supplémentaire utilise le vrai Qt quand il est présent.
@@ -134,7 +135,7 @@ def test_echec_de_fermeture_annule_la_demande():
     assert not client.maintenance_requested
 
 
-# --- Code PIN puis éditeur -------------------------------------------------------
+# --- Code PIN puis action de maintenance --------------------------------------
 
 def _settings_with_pin(monkeypatch, pin_hash):
     fake_config = types.SimpleNamespace(
@@ -142,7 +143,8 @@ def _settings_with_pin(monkeypatch, pin_hash):
     monkeypatch.setattr(main, "Config", lambda: fake_config)
 
 
-def _fake_editor(monkeypatch, calls, pin_granted=True, pin_fails=False):
+def _fake_editor(monkeypatch, calls, pin_granted=True, pin_fails=False,
+                 action="configure", action_fails=False):
     module = types.ModuleType("config_editor")
 
     class ConfigEditor:
@@ -158,8 +160,15 @@ def _fake_editor(monkeypatch, calls, pin_granted=True, pin_fails=False):
             raise RuntimeError("Tk indisponible")
         return pin_granted
 
+    def ask_maintenance_action():
+        calls.append(("action",))
+        if action_fails:
+            raise RuntimeError("Tk indisponible")
+        return action
+
     module.ConfigEditor = ConfigEditor
     module.ask_maintenance_pin = ask_maintenance_pin
+    module.ask_maintenance_action = ask_maintenance_action
     monkeypatch.setitem(sys.modules, "config_editor", module)
 
 
@@ -167,8 +176,8 @@ def test_sans_pin_l_editeur_s_ouvre_directement(monkeypatch):
     calls = []
     _settings_with_pin(monkeypatch, "")
     _fake_editor(monkeypatch, calls)
-    main._run_maintenance()
-    assert calls == [("editor", {
+    assert main._run_maintenance() is True
+    assert calls == [("action",), ("editor", {
         "kiosk_follows": True,
         "idle_timeout_s": main.MAINTENANCE_EDITOR_IDLE_TIMEOUT_S})]
 
@@ -178,8 +187,8 @@ def test_pin_correct_ouvre_l_editeur(monkeypatch):
     stored = maintenance_pin.hash_pin("1234")
     _settings_with_pin(monkeypatch, stored)
     _fake_editor(monkeypatch, calls, pin_granted=True)
-    main._run_maintenance()
-    assert [c[0] for c in calls] == ["pin", "editor"]
+    assert main._run_maintenance() is True
+    assert [c[0] for c in calls] == ["pin", "action", "editor"]
     assert calls[0][1] == stored
 
 
@@ -187,7 +196,7 @@ def test_pin_refuse_n_ouvre_pas_l_editeur(monkeypatch):
     calls = []
     _settings_with_pin(monkeypatch, maintenance_pin.hash_pin("1234"))
     _fake_editor(monkeypatch, calls, pin_granted=False)
-    main._run_maintenance()
+    assert main._run_maintenance() is True
     assert [c[0] for c in calls] == ["pin"]
 
 
@@ -195,8 +204,33 @@ def test_fenetre_pin_en_panne_refuse_l_acces(monkeypatch):
     calls = []
     _settings_with_pin(monkeypatch, maintenance_pin.hash_pin("1234"))
     _fake_editor(monkeypatch, calls, pin_fails=True)
-    main._run_maintenance()
+    assert main._run_maintenance() is True
     assert [c[0] for c in calls] == ["pin"]
+
+
+def test_choix_extinction_empeche_la_relance(monkeypatch):
+    calls = []
+    _settings_with_pin(monkeypatch, "")
+    _fake_editor(monkeypatch, calls,
+                 action=maintenance_pin.MAINTENANCE_ACTION_SHUTDOWN)
+    assert main._run_maintenance() is False
+    assert calls == [("action",)]
+
+
+def test_annulation_du_choix_relance_la_borne(monkeypatch):
+    calls = []
+    _settings_with_pin(monkeypatch, "")
+    _fake_editor(monkeypatch, calls, action=None)
+    assert main._run_maintenance() is True
+    assert calls == [("action",)]
+
+
+def test_fenetre_action_en_panne_relance_la_borne(monkeypatch):
+    calls = []
+    _settings_with_pin(monkeypatch, "")
+    _fake_editor(monkeypatch, calls, action_fails=True)
+    assert main._run_maintenance() is True
+    assert calls == [("action",)]
 
 
 # --- Relance -----------------------------------------------------------------------

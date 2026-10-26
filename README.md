@@ -169,15 +169,21 @@ invalide) — aucune connaissance du chemin n'est nécessaire.
 ### 4.3 Touche de maintenance (F10)
 
 Sur une borne **en service**, la touche **F10** d'un clavier branché ouvre la
-configuration sans terminal ni redémarrage manuel (F11 reste la bascule
+maintenance sans terminal ni redémarrage manuel (F11 reste la bascule
 plein écran) :
 
 1. la fenêtre kiosque se ferme ;
 2. si un **code PIN de maintenance** est défini, il est demandé (3 essais,
    abandon après 60 s sans saisie) ;
-3. l'éditeur s'ouvre ;
-4. à sa fermeture — enregistrée ou non — **la borne redémarre d'elle-même**
-   avec la configuration en vigueur.
+3. une fenêtre propose alors trois suites :
+   - **Ouvrir la configuration** (choix par défaut, touche Entrée) : l'éditeur
+     s'ouvre et, à sa fermeture — enregistrée ou non — **la borne redémarre
+     d'elle-même** avec la configuration en vigueur ;
+   - **Éteindre la borne** : après confirmation, l'application se termine et
+     **ne redémarre pas** — le PC peut alors être éteint ou l'application
+     relancée à la main ;
+   - **Reprendre le service** (Échap, ou 60 s sans réponse) : la borne
+     redémarre telle quelle.
 
 La touche fonctionne sur tous les écrans : page patient, « Borne hors ligne »
 et « Configuration invalide ». Un éditeur oublié ouvert se ferme sans

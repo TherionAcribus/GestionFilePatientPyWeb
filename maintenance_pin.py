@@ -1,7 +1,8 @@
 """Code PIN de maintenance de la borne (logique pure, sans interface).
 
-La touche de maintenance (F10, cf. ``main.MAINTENANCE_KEY``) ouvre l'éditeur
-de configuration sans quitter l'application. Le patient n'a pas de clavier :
+La touche de maintenance (F10, cf. ``main.MAINTENANCE_KEY``) ouvre la
+fenêtre de maintenance — choix entre la configuration et l'extinction de la
+borne — sans quitter l'application. Le patient n'a pas de clavier :
 le raccourci suffit à le tenir à l'écart. Le code PIN est donc **optionnel** ;
 il protège les sites où un clavier reste branché et accessible.
 
@@ -18,9 +19,16 @@ import hashlib
 import hmac
 import secrets
 
-#: Touche qui ouvre la configuration depuis la borne en service. F11 est
+#: Touche qui ouvre la maintenance depuis la borne en service. F11 est
 #: déjà pris (bascule plein écran).
 MAINTENANCE_KEY = "F10"
+
+#: Actions proposées par la fenêtre de maintenance (config_editor.
+#: MaintenanceActionDialog) après la touche de maintenance ; définies ici
+#: pour être partagées avec ``main`` sans importer tkinter. Toute autre
+#: issue (annulation, inactivité, fenêtre en panne) fait repartir la borne.
+MAINTENANCE_ACTION_CONFIGURE = "configure"
+MAINTENANCE_ACTION_SHUTDOWN = "shutdown"
 
 PIN_MIN_LENGTH = 4
 PIN_MAX_LENGTH = 12

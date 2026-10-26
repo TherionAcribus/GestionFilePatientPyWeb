@@ -53,12 +53,21 @@ class _FakeSession:
             raise self.error
         return self.response
 
+    def head(self, url, headers=None, timeout=None):
+        self.calls.append({"url": url, "headers": headers or {}})
+        if self.error:
+            raise self.error
+        return self.response
+
 
 class _FakeWindow:
     def __init__(self, url):
         self._url = url
         self.loaded_urls = []
         self.loaded_html = []
+        # Scripts injectés via evaluate_js (le repli de _run_page_script sans
+        # run_js) : la sonde de liaison pousse __kioskLinkState par ce canal.
+        self.js_scripts = []
 
     def get_current_url(self):
         return self._url
@@ -70,8 +79,8 @@ class _FakeWindow:
     def load_html(self, html):
         self.loaded_html.append(html)
 
-    def evaluate_js(self, _script):
-        pass
+    def evaluate_js(self, script):
+        self.js_scripts.append(script)
 
 
 class _FakePrinterAPI:
@@ -99,6 +108,10 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client._dom_probe_pending = False
     client._dom_probe_sent_at = None
     client._evaluate_js_blocking = None
+    client._link_alive = True
+    client._link_misses = 0
+    client._link_probe_stop = threading.Event()
+    client._link_probe_thread = None
     client.printer_api = _FakePrinterAPI()
     client.operational = False
     client._operational_lock = threading.Lock()
@@ -531,3 +544,30 @@ def test_page_watchdog_starts_dom_probe_on_live_url():
     # repasse à False rapidement — on ne l'exige pas ici, seulement
     # l'absence d'effet sur la navigation.
     assert window.loaded_urls == []
+
+
+def test_link_probe_detects_cut_and_recovery():
+    """La sonde déclare la coupure au 2e échec (pas au 1er : pas de
+    clignotement), pousse l'état à la page et journalise l'incident."""
+    client = _bare_client()
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+    # Une coupure réseau LÈVE (ConnectionError) : un code HTTP quelconque ne
+    # fait pas échouer session.head.
+    client.session = _FakeSession(error=ReqConnectionError("down"))
+
+    client._check_server_link()
+    assert client._link_alive is True          # un seul échec ne suffit pas
+    client._check_server_link()
+    assert client._link_alive is False
+    assert [e[0] for e in client.printer_api.events] == ["kiosk_link_lost"]
+    assert client.printer_api.events[0][2] is True
+    # La page reçoit l'état via le pont JS.
+    assert any("__kioskLinkState(false)" in s
+               for s in client.window.js_scripts)
+
+    client.session = _FakeSession(_FakeResponse(200, {}))
+    client._check_server_link()
+    assert client._link_alive is True
+    assert [e[0] for e in client.printer_api.events][-1] == "kiosk_link_restored"
+    assert any("__kioskLinkState(true)" in s
+               for s in client.window.js_scripts)

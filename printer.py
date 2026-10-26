@@ -212,8 +212,10 @@ STATUS_BACKOFF_MAX = 30.0
 # Signal de vie de la borne : sans envoi périodique, un statut « imprimante OK »
 # très ancien est indistinguible d'une borne éteinte ou injoignable côté admin.
 # L'envoi est léger et le serveur met à jour le dernier contact sans empiler de
-# lignes identiques.
-STATUS_HEARTBEAT_INTERVAL = 60
+# lignes identiques. 30 s : le serveur déclare la borne injoignable après 3
+# intervalles manqués (~90 s) au lieu de 180 — l'équipe est prévenue plus vite
+# quand le lien tombe.
+STATUS_HEARTBEAT_INTERVAL = 30
 
 # Attente maximale (secondes) accordée à un thread de fond pour se terminer à la
 # fermeture. Un `join()` SANS timeout figerait l'arrêt de la borne si le thread

@@ -60,6 +60,15 @@ PATIENT_PAGE_RECOVERY_INTERVAL = 30
 # retour, la page est rechargée de force.
 DOM_PROBE_TIMEOUT = 90
 
+# Sonde de liaison réseau, INDÉPENDANTE du navigateur : une liaison Wi-Fi
+# morte ne produit souvent aucune erreur immédiate (l'interface garde son
+# IP, les paquets partent dans le vide) — le socket patient ne l'apprend
+# qu'au timeout ping (~45 s) et les requêtes pendent 10 s. Cette sonde HTTP
+# voit la coupure en ~15-20 s et pousse l'état directement à la page.
+LINK_PROBE_PERIOD = 10       # s entre deux sondes
+LINK_PROBE_TIMEOUT = 3       # s max par sonde
+LINK_PROBE_MISSES = 2        # échecs consécutifs avant de déclarer la coupure
+
 # Touche de maintenance (maintenance_pin.MAINTENANCE_KEY) : l'éditeur ouvert
 # depuis une borne en service se ferme seul après ce délai sans clavier ni
 # souris, pour que la borne ne reste pas hors service si on l'oublie.
@@ -191,6 +200,11 @@ class WebViewClient:
         self._last_page_recovery_attempt = None
         self._page_watchdog_stop = threading.Event()
         self._page_watchdog_thread = None
+        # Sonde de liaison réseau (voir _check_server_link).
+        self._link_probe_stop = threading.Event()
+        self._link_probe_thread = None
+        self._link_alive = True
+        self._link_misses = 0
         # Touche de maintenance pressée : la fenêtre se ferme et __main__
         # enchaîne sur la configuration puis relance la borne.
         self.maintenance_requested = False
@@ -650,6 +664,14 @@ class WebViewClient:
             target=self._page_watchdog_loop,
             daemon=True)
         self._page_watchdog_thread.start()
+        # Sonde de liaison : lancée au même endroit que la surveillance de
+        # page (fenêtre créée) ; indépendante pour garder son propre rythme
+        # (10 s ≠ 30 s).
+        if not (self._link_probe_thread and self._link_probe_thread.is_alive()):
+            self._link_probe_stop.clear()
+            self._link_probe_thread = threading.Thread(
+                target=self._link_probe_loop, daemon=True)
+            self._link_probe_thread.start()
 
     def _page_watchdog_loop(self):
         while not self._page_watchdog_stop.wait(PATIENT_PAGE_RECOVERY_INTERVAL):
@@ -660,6 +682,64 @@ class WebViewClient:
                 # dernier recours ; il ne doit jamais mourir sur une erreur
                 # ponctuelle du moteur ou d'une lecture d'URL.
                 logger.exception("Erreur inattendue dans la surveillance de page.")
+
+    def _check_server_link(self):
+        """Une itération de la sonde : HEAD /patient, délai court.
+
+        La transition up->down exige ``LINK_PROBE_MISSES`` échecs
+        consécutifs (un paquet perdu ne fait pas clignoter l'écran) ; le
+        retour à la normale est immédiat (plus d'attente inutile)."""
+        session = getattr(self, 'session', None)
+        if session is None or not self.base_url:
+            return
+        try:
+            session.head(f"{self.base_url}/patient",
+                         timeout=LINK_PROBE_TIMEOUT)
+            alive = True
+        except Exception:
+            alive = False
+        if alive:
+            self._link_misses = 0
+        else:
+            self._link_misses += 1
+        effective = alive or self._link_misses < LINK_PROBE_MISSES
+        if effective != self._link_alive:
+            self._link_alive = effective
+            self._on_link_state_changed(effective)
+
+    def _on_link_state_changed(self, alive):
+        """Transition de liaison : journal serveur (rejoué au retour du
+        réseau) + état poussé à la page pour l'overlay immédiat."""
+        if alive:
+            self.printer_api.report_event(
+                "kiosk_link_restored", "Liaison réseau rétablie")
+        else:
+            logger.warning("Liaison serveur perdue (sonde borne).")
+            self.printer_api.report_event(
+                "kiosk_link_lost",
+                "Liaison réseau coupée côté borne", is_error=True)
+        self._push_link_state(alive)
+
+    def _push_link_state(self, alive):
+        """Transmet l'état au JS de la page : l'overlay patient s'affiche ou
+        se ferme sans attendre le socket. La garde JS rend l'appel sans
+        effet sur offline.html (qui n'a pas le hook)."""
+        try:
+            self._run_page_script(
+                "window.__kioskLinkState "
+                f"&& window.__kioskLinkState({str(alive).lower()})")
+        except Exception:
+            # Page morte/absente : le watchdog de page reprendra la main.
+            logger.debug("État de liaison non transmis à la page.")
+
+    def _link_probe_loop(self):
+        while not self._link_probe_stop.wait(LINK_PROBE_PERIOD):
+            try:
+                self._check_server_link()
+            except Exception:
+                # La sonde est un supplément, jamais une sécurité critique :
+                # elle ne doit pas mourir ni casser le reste de la borne.
+                logger.exception("Sonde de liaison impossible.")
 
     def _show_offline_screen(self):
         """Substitue l'écran local « Borne hors ligne » à la page affichée.
@@ -1070,11 +1150,16 @@ class WebViewClient:
             page_watchdog_stop = getattr(self, '_page_watchdog_stop', None)
             if page_watchdog_stop:
                 page_watchdog_stop.set()
+            link_probe_stop = getattr(self, '_link_probe_stop', None)
+            if link_probe_stop:
+                link_probe_stop.set()
             join_with_timeout(self._init_thread, "initialisation borne")
             join_with_timeout(self._token_refresh_thread, "renouvellement du token")
             join_with_timeout(
                 getattr(self, '_page_watchdog_thread', None),
                 "surveillance de page")
+            join_with_timeout(
+                getattr(self, '_link_probe_thread', None), "sonde de liaison")
             if self.printer:
                 self.printer.cleanup()
 

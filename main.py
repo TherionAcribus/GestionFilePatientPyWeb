@@ -15,8 +15,16 @@ import logging_config
 import maintenance_pin
 import ui_assets
 from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
-from errors import BorneError, PrinterNotReadyError, SessionUnavailableError, TokenUnavailableError
+from errors import (
+    BorneError,
+    PrinterNotReadyError,
+    SecretRejectedError,
+    ServerResponseError,
+    SessionUnavailableError,
+    TokenUnavailableError,
+)
 from printer import NETWORK_TIMEOUT, Printer, PrinterAPI, join_with_timeout
+from startup_diagnosis import DiagnosisTracker, diagnose
 
 logger = logging.getLogger("borne.main")
 
@@ -185,6 +193,10 @@ class WebViewClient:
         # Touche de maintenance pressée : la fenêtre se ferme et __main__
         # enchaîne sur la configuration puis relance la borne.
         self.maintenance_requested = False
+        # Cause probable d'une initialisation qui échoue, affichée au
+        # technicien sur l'écran « Borne hors ligne » (startup_diagnosis).
+        self._diagnosis_tracker = DiagnosisTracker()
+        self._displayed_diagnosis = None
 
         # Validation stricte de la configuration AVANT démarrage. Une borne mal
         # configurée (fichier illisible, URL invalide, http distant en prod,
@@ -272,7 +284,10 @@ class WebViewClient:
                               or f"{self.base_url}/patient"}
             self._patient_page_shown = True
         else:
-            content_kwargs = {'html': ui_assets.offline_html()}
+            diagnosis = self._diagnosis_tracker.visible(time.monotonic())
+            self._displayed_diagnosis = diagnosis
+            content_kwargs = {'html': ui_assets.offline_html(
+                diagnosis.screen_text() if diagnosis else None)}
 
         self.window = webview.create_window(
             title="Flowelis Borne",
@@ -340,27 +355,55 @@ class WebViewClient:
         url = f'{self.base_url}/api/get_app_token'
         data = {'app_secret': Config().settings.app_secret}
 
+        # Dernière cause d'échec, typée : le serveur qui RÉPOND mal (secret
+        # refusé, URL qui n'est pas un serveur Flowelis) se distingue ainsi du
+        # serveur injoignable dans le diagnostic affiché (startup_diagnosis).
+        failure = None
         for attempt in range(max_retries):
             try:
                 # timeout : sans lui, une borne face à un serveur injoignable
                 # resterait bloquée indéfiniment sur cet appel.
                 response = self.session.post(url, data=data, timeout=NETWORK_TIMEOUT)
                 if response.status_code == 200:
-                    self.app_token = response.json()['token']
-                    # Enregistre le jeton pour qu'il soit masqué s'il apparaît
-                    # un jour dans un message de log (défense en profondeur).
-                    logging_config.register_secret(self.app_token)
-                    logger.info("Token d'application obtenu (connexion serveur OK).")
-                    return True
-                logger.warning("Échec de l'obtention du token (tentative %d/%d, HTTP %s).",
-                               attempt + 1, max_retries, response.status_code)
+                    try:
+                        token = response.json()['token']
+                    except (ValueError, KeyError, TypeError):
+                        token = None
+                    if not token or not isinstance(token, str):
+                        failure = ServerResponseError(
+                            "réponse du serveur sans jeton d'application",
+                            status_code=200)
+                        logger.warning("Réponse sans jeton à l'obtention du "
+                                       "token (tentative %d/%d).",
+                                       attempt + 1, max_retries)
+                    else:
+                        self.app_token = token
+                        # Enregistre le jeton pour qu'il soit masqué s'il
+                        # apparaît un jour dans un message de log (défense en
+                        # profondeur).
+                        logging_config.register_secret(self.app_token)
+                        logger.info("Token d'application obtenu (connexion serveur OK).")
+                        return True
+                else:
+                    if response.status_code in (401, 403):
+                        failure = SecretRejectedError(response.status_code)
+                    else:
+                        failure = ServerResponseError(
+                            f"réponse inattendue du serveur (HTTP "
+                            f"{response.status_code})",
+                            status_code=response.status_code)
+                    logger.warning("Échec de l'obtention du token (tentative %d/%d, HTTP %s).",
+                                   attempt + 1, max_retries, response.status_code)
             except RequestException as e:
+                failure = None
                 logger.warning("Erreur réseau à l'obtention du token (tentative %d/%d): %s",
                                attempt + 1, max_retries, e)
 
             if attempt < max_retries - 1:  # Ne pas attendre après la dernière tentative
                 time.sleep(retry_delay)
 
+        if failure is not None:
+            raise failure
         raise TokenUnavailableError(
             f"Impossible d'obtenir le token d'application après {max_retries} "
             "tentative(s)")
@@ -420,6 +463,7 @@ class WebViewClient:
                     self.start_token_refresh()
                     self.connected = True
                     self._set_operational(True)
+                    self._diagnosis_tracker.record_success()
                     logger.info("Borne opérationnelle.")
                     return
                 except BorneError as e:
@@ -429,6 +473,9 @@ class WebViewClient:
                     wait_delay = _jittered_init_delay(delay)
                     logger.warning("Initialisation impossible, nouvel essai "
                                    "dans %.1fs : %s", wait_delay, e)
+                    self._diagnosis_tracker.record_failure(
+                        diagnose(e, self.base_url), time.monotonic())
+                    self._refresh_startup_diagnosis()
                 except Exception:
                     # Inattendu : trace complète, mais la boucle continue (une
                     # borne ne doit jamais rester bloquée sur l'écran hors ligne
@@ -450,6 +497,35 @@ class WebViewClient:
 
         self._init_thread = threading.Thread(target=_supervise, daemon=True)
         self._init_thread.start()
+
+    def _refresh_startup_diagnosis(self):
+        """Met à jour la ligne « Diagnostic technicien » de l'écran hors
+        ligne quand la panne à signaler change.
+
+        Seulement pendant le démarrage (borne pas encore opérationnelle,
+        configuration acceptée) et une fois la fenêtre prête. L'écran n'est
+        rechargé que si le diagnostic visible change, pas à chaque échec."""
+        if self._config_error or self.is_operational():
+            return
+        if not (self.window and self._window_ready.is_set()):
+            return
+        diagnosis = self._diagnosis_tracker.visible(time.monotonic())
+        if diagnosis == self._displayed_diagnosis:
+            return
+        load_html = getattr(self.window, 'load_html', None)
+        if not callable(load_html):
+            return
+        try:
+            load_html(ui_assets.offline_html(
+                diagnosis.screen_text() if diagnosis else None))
+        except Exception:
+            # Frontière Qt/pywebview : l'écran garde l'ancien texte, on
+            # réessaiera au prochain échec.
+            logger.exception("Mise à jour du diagnostic à l'écran impossible.")
+            return
+        self._displayed_diagnosis = diagnosis
+        if diagnosis:
+            logger.warning("Diagnostic affiché à l'écran : %s", diagnosis.message)
 
     def is_operational(self):
         with self._operational_lock:
@@ -887,6 +963,7 @@ class WebViewClient:
         prête et on charge /patient si la borne est déjà opérationnelle."""
         self._window_ready.set()
         self._maybe_show_patient_page()
+        self._refresh_startup_diagnosis()
 
     def on_loaded(self):
         """Gestionnaire d'événement pour le chargement de la page"""

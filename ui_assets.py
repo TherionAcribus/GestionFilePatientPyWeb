@@ -107,14 +107,25 @@ def _fallback(message: str) -> str:
 # Écrans HTML
 # ---------------------------------------------------------------------------
 
-def offline_html() -> str:
+def offline_html(diagnostic: str | None = None) -> str:
     """Écran « Borne hors ligne », affiché tant que la borne n'est pas
-    opérationnelle (le serveur ne le sert pas : il doit fonctionner hors ligne)."""
+    opérationnelle (le serveur ne le sert pas : il doit fonctionner hors ligne).
+
+    ``diagnostic`` : ligne destinée au technicien (cause probable de la
+    panne, cf. startup_diagnosis), échappée puis affichée en bas d'écran."""
+    if diagnostic:
+        block = ("<strong>Diagnostic technicien :</strong> "
+                 + html.escape(diagnostic))
+    else:
+        block = ""
     try:
-        return load("offline.html")
+        return render_asset("offline.html", {"DIAGNOSTIC": block})
     except AssetError:
         logger.exception("Écran hors ligne indisponible, repli minimal.")
-        return _fallback("Connexion au serveur en cours…")
+        message = "Connexion au serveur en cours…"
+        if diagnostic:
+            message = f"{message} {diagnostic}"
+        return _fallback(message)
 
 
 def build_config_error_html(errors) -> str:

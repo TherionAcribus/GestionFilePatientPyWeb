@@ -238,6 +238,21 @@ un délai exponentiel avec un léger décalage aléatoire entre les bornes et un
 plafond strict de 60 secondes : le retour du réseau ne nécessite pas de
 redémarrage manuel.
 
+Si le démarrage n'aboutit pas, l'écran « Borne hors ligne » ajoute en bas une
+ligne **« Diagnostic technicien »** avec la cause probable et le rappel de la
+touche F10 (le message destiné aux patients ne change pas) :
+
+| Cause | Affichée |
+|-------|----------|
+| Secret d'application refusé par le serveur (HTTP 401/403) | immédiatement |
+| L'URL répond mais n'est pas un serveur Flowelis (HTTP 404/405) | immédiatement |
+| Serveur injoignable (réseau, serveur arrêté, URL erronée) | après 2 min |
+| Réponse anormale du serveur, session borne refusée | après 2 min |
+
+Le délai évite d'alarmer quand le réseau arrive quelques secondes après la
+borne. La borne continue de réessayer dans tous les cas : corriger le serveur
+suffit, sans toucher à la borne.
+
 ### 5.1 Démarrage automatique — Linux
 
 **Option A : session graphique (XDG autostart)** — le plus simple pour un
@@ -344,4 +359,5 @@ La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
 | `logging_config.py` | Journalisation (niveaux, rotation, masquage des secrets). |
 | `editor_logic.py` | Logique pure de l'éditeur (testable sans tkinter). |
 | `maintenance_pin.py` | Touche de maintenance et code PIN (empreinte, vérification). |
+| `startup_diagnosis.py` | Cause probable d'un démarrage qui échoue, affichée au technicien. |
 | `secret_store.py` | Stockage des secrets dans le magasin du système (keyring). |

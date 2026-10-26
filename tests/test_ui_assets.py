@@ -143,7 +143,7 @@ def test_each_placeholder_appears_once_per_asset():
     expected = {
         "config_error.html": ["ERROR_ITEMS", "MAINTENANCE_KEY"],
         "kiosk_input.js": ["HIDE_CURSOR"],
-        "offline.html": [],
+        "offline.html": ["DIAGNOSTIC"],
         "kiosk_protection.js": [],
         "keyboard.js": [],
         "pywebview_bridge.js": [],

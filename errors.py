@@ -34,6 +34,28 @@ class TokenUnavailableError(BorneError):
     ligne » reste affiché."""
 
 
+class SecretRejectedError(TokenUnavailableError):
+    """Le serveur a répondu mais refuse le secret d'application (HTTP 401/403).
+
+    Presque toujours une erreur de configuration (secret de la borne, ou
+    secret du serveur absent) : la borne réessaie quand même — le serveur
+    peut être corrigé sans toucher à la borne — mais l'écran le signale tout
+    de suite au technicien."""
+
+    def __init__(self, status_code):
+        super().__init__(f"secret d'application refusé (HTTP {status_code})")
+        self.status_code = status_code
+
+
+class ServerResponseError(TokenUnavailableError):
+    """Le serveur a répondu, mais pas comme un serveur Flowelis attendu
+    (code HTTP inattendu, réponse sans jeton) — souvent une URL erronée."""
+
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class PrinterNotReadyError(BorneError):
     """Initialisation de l'imprimante demandée alors que la borne n'a pas encore
     de jeton d'application (les statuts imprimante ne pourraient pas être

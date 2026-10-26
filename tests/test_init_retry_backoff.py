@@ -31,6 +31,13 @@ def _bare_client():
     client._init_stop = threading.Event()
     client.connected = False
     client._init_thread = None
+    client._diagnosis_tracker = main.DiagnosisTracker()
+    client._displayed_diagnosis = None
+    client._config_error = False
+    client.window = None          # pas de fenêtre : diagnostic non affiché
+    client.base_url = "https://serveur.example"
+    client.operational = False
+    client._operational_lock = threading.Lock()
     return client
 
 

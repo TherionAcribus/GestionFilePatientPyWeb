@@ -102,6 +102,11 @@ class PrinterAPI:
         """Définit la fonction de callback pour l'impression"""
         self._print_callback = callback
 
+    def borne_id(self):
+        """Identifiant de la borne, exposé à la page patient via le pont
+        JS (bandeau « imprimante indisponible » adressé par borne)."""
+        return self._borne_id
+
     def print_ticket(self, print_data, print_job_id=None):
         """Méthode exposée à JavaScript pour l'impression.
 

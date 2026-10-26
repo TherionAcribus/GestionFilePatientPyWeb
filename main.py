@@ -229,6 +229,8 @@ class WebViewClient:
                 print_ticket=self.printer_api.print_ticket),
             window=_JSApiNamespace(
                 toggle_fullscreen=self.window_api.toggle_fullscreen),
+            kiosk=_JSApiNamespace(
+                borne_id=self.printer_api.borne_id),
         )
 
         # Tant que la borne n'est pas opérationnelle, on affiche l'écran local

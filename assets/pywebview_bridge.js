@@ -62,4 +62,9 @@
     window.pywebview.api.window.toggle_fullscreen = function() {
         return invoke('window.toggle_fullscreen', arguments);
     };
+
+    window.pywebview.api.kiosk = window.pywebview.api.kiosk || {};
+    window.pywebview.api.kiosk.borne_id = function() {
+        return invoke('kiosk.borne_id', arguments);
+    };
 })();

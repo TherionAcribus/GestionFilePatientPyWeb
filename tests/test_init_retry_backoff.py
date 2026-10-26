@@ -203,12 +203,19 @@ def test_initialize_printer_reuses_existing_manager(monkeypatch):
         def print(self, *_args, **_kwargs):
             return {"success": True}
 
+        def report_event(self, *_args, **_kwargs):
+            return None
+
     class _PrinterAPI:
         def __init__(self):
             self.callback = None
+            self.reporter = None
 
         def set_print_callback(self, callback):
             self.callback = callback
+
+        def set_event_reporter(self, reporter):
+            self.reporter = reporter
 
     monkeypatch.setattr(main, "Config", lambda: _Config())
     monkeypatch.setattr(main, "Printer", _Printer)
@@ -226,3 +233,5 @@ def test_initialize_printer_reuses_existing_manager(monkeypatch):
     assert len(created) == 1
     assert created[0].tokens == ["token-2"]
     assert client.printer_api.callback == created[0].print
+    # Canal de remontée des incidents borne branché sur le même Printer.
+    assert client.printer_api.reporter == created[0].report_event

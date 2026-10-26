@@ -97,10 +97,43 @@ class PrinterAPI:
         # kiosque identifie la borne dans l'acquittement des tirages de
         # test admin (print_test_result -> /socket_admin).
         self._borne_id = Config().settings.borne_id or socket.gethostname()
+        # Canal de remontée des incidents borne (report_event) : branché sur
+        # le Printer réel par set_event_reporter une fois l'imprimante
+        # initialisée — avant cela, aucun thread de statut n'existe pour
+        # porter l'envoi.
+        self._event_reporter = None
 
     def set_print_callback(self, callback):
         """Définit la fonction de callback pour l'impression"""
         self._print_callback = callback
+
+    def set_event_reporter(self, reporter):
+        """Branche ``report_event`` sur le canal de statuts réel
+        (``Printer.report_event``), disponible seulement une fois
+        l'imprimante créée."""
+        self._event_reporter = reporter
+
+    def report_event(self, code, message, is_error=False):
+        """Journalise un incident de la BORNE (page perdue/figée, ticket de
+        session refusé) auprès du serveur — façade déléguant au Printer.
+
+        Sans reporter branché (imprimante pas encore initialisée), aucun
+        thread de statut n'existe pour porter l'envoi : l'incident est
+        tracé localement. Le reporting ne doit jamais casser la
+        récupération de la borne."""
+        reporter = self._event_reporter
+        if reporter is None:
+            status_logger.info(
+                "Incident borne non remonté (pas de canal de statuts) : %s",
+                code)
+            return
+        try:
+            reporter(code, message, is_error=is_error)
+        except Exception:
+            # Un incident non remonté ne doit pas interrompre la
+            # récupération de page en cours.
+            status_logger.exception(
+                "Remontée de l'incident borne impossible (%s).", code)
 
     def borne_id(self):
         """Identifiant de la borne, exposé à la page patient via le pont
@@ -903,8 +936,8 @@ class Printer:
         timestamp reflète le contact réel avec le serveur."""
         return self._status_item('heartbeat', 'Borne en ligne')
 
-    def send_printer_status(self, error, error_message):
-        signature = (error, error_message)
+    def send_printer_status(self, error, error_message, is_error=None):
+        signature = (error, error_message, is_error)
         # File bornée qui ne conserve que le DERNIER état : si un statut est
         # encore en attente (réseau lent/bloqué), on le remplace au lieu
         # d'empiler un backlog de statuts périmés. Le serveur n'a besoin que de
@@ -920,7 +953,24 @@ class Printer:
                     self.status_queue.get_nowait()
             except queue.Empty:
                 pass
-            self.status_queue.put(self._status_item(error, error_message))
+            item = self._status_item(error, error_message)
+            if is_error is not None:
+                # Sévérité explicite (incidents kiosk_*) : sans « error »
+                # dans le code, la dérivation historique côté serveur
+                # manquerait l'icône rouge du journal.
+                item["is_error"] = bool(is_error)
+            self.status_queue.put(item)
+
+    def report_event(self, code, message, is_error=False):
+        """Journalise un incident de la BORNE (page figée, session refusée,
+        récupération) dans le journal serveur.
+
+        Réutilise le canal des statuts imprimante : les codes ``kiosk_*``
+        sont exclus de l'état métier côté serveur mais prouvent un contact
+        et apparaissent dans le journal de la page « Bornes ». La
+        déduplication par signature évite d'empiler une ligne par tentative
+        pendant une panne prolongée."""
+        self.send_printer_status(code, message, is_error=is_error)
 
     def update_token(self, new_token):
         """Met à jour le token utilisé pour l'envoi des statuts (renouvellement

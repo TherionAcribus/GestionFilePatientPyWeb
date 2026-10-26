@@ -74,6 +74,16 @@ class _FakeWindow:
         pass
 
 
+class _FakePrinterAPI:
+    """Façade de remontée d'incidents borne : enregistre les appels à
+    report_event au lieu d'enfiler un statut imprimante."""
+    def __init__(self):
+        self.events = []
+
+    def report_event(self, code, message, is_error=False):
+        self.events.append((code, message, is_error))
+
+
 def _bare_client(base_url="http://127.0.0.1:5000"):
     """WebViewClient sans __init__ : uniquement ce que le flux ticket utilise."""
     client = main.WebViewClient.__new__(main.WebViewClient)
@@ -89,6 +99,7 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client._dom_probe_pending = False
     client._dom_probe_sent_at = None
     client._evaluate_js_blocking = None
+    client.printer_api = _FakePrinterAPI()
     client.operational = False
     client._operational_lock = threading.Lock()
     client._window_ready = threading.Event()
@@ -430,6 +441,76 @@ def test_page_watchdog_forces_reload_when_dom_is_dead():
         "http://127.0.0.1:5000/patient/kiosk_login/regen"]
     assert client.connected is True
     assert client._dom_probe_pending is False
+
+
+def test_session_ticket_refusal_is_reported_as_kiosk_event():
+    """Ticket refusé pendant la reconnexion /login : l'incident est remonté
+    au serveur (journal « Bornes ») sans masquer l'état métier imprimante."""
+    client = _bare_client()
+    client.session = _FakeSession(_FakeResponse(500, {}))
+    client.window = _FakeWindow("http://127.0.0.1:5000/login")
+
+    client.on_loaded()
+
+    assert [e[0] for e in client.printer_api.events] == ["kiosk_session_fail"]
+    assert client.printer_api.events[0][2] is True
+
+
+def test_page_watchdog_reports_lost_page_as_kiosk_event():
+    """Page servie disparue : l'incident de récupération est journalisé
+    (kiosk_page_lost) — non bloquant, donc sans drapeau d'erreur."""
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    client.window = _FakeWindow("chrome-error://webengine/")
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/r"}))
+
+    client._recover_patient_page()
+
+    assert [e[0] for e in client.printer_api.events] == ["kiosk_page_lost"]
+    assert client.printer_api.events[0][2] is False
+
+
+def test_dom_probe_timeout_reports_kiosk_page_dead():
+    """Moteur figé sur URL valide : le timeout de la sonde DOM remonte
+    l'incident kiosk_page_dead (en erreur) avant le rechargement forcé."""
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/r"}))
+    client._dom_probe_pending = True
+    client._dom_probe_sent_at = (
+        time.monotonic() - (main.DOM_PROBE_TIMEOUT + 1))
+
+    client._recover_patient_page()
+
+    assert [e[0] for e in client.printer_api.events] == ["kiosk_page_dead"]
+    assert client.printer_api.events[0][2] is True
+
+
+def test_force_reload_session_failure_reports_kiosk_event():
+    """Rechargement forcé sans ticket disponible : kiosk_session_fail est
+    remonté en erreur, puis l'écran hors ligne s'affiche."""
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client.session = _FakeSession(_FakeResponse(500, {}))
+
+    client._force_patient_reload()
+
+    assert [e[0] for e in client.printer_api.events] == ["kiosk_session_fail"]
+    assert client.printer_api.events[0][2] is True
+    assert client.connected is False
 
 
 def test_page_watchdog_starts_dom_probe_on_live_url():

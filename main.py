@@ -534,6 +534,9 @@ class WebViewClient:
             self._patient_login_url = self._fetch_patient_login_url()
         except SessionUnavailableError as e:
             logger.warning("Impossible de renouveler la session borne : %s", e)
+            self.printer_api.report_event(
+                "kiosk_session_fail",
+                f"Ticket de session indisponible : {e}", is_error=True)
             # Le serveur ne délivre plus de ticket : /login n'est pas utile
             # au patient, on lui substitue l'écran hors ligne. Le watchdog de
             # page poursuivra les tentatives (l'URL n'est plus dans base_url).
@@ -605,6 +608,11 @@ class WebViewClient:
                     and now - self._dom_probe_sent_at > DOM_PROBE_TIMEOUT):
                 logger.warning("Page patient muette (DOM sans réponse), "
                                "récupération forcée.")
+                self.printer_api.report_event(
+                    "kiosk_page_dead",
+                    "Page patient figée : DOM sans réponse, rechargement "
+                    "forcé",
+                    is_error=True)
                 self._dom_probe_pending = False
                 self._force_patient_reload()
             return
@@ -635,6 +643,9 @@ class WebViewClient:
         except SessionUnavailableError as e:
             self.connected = False
             logger.warning("Session borne non récupérable : %s", e)
+            self.printer_api.report_event(
+                "kiosk_session_fail",
+                f"Ticket de session indisponible : {e}", is_error=True)
             self._show_offline_screen()
             return
         self.connected = True
@@ -665,6 +676,12 @@ class WebViewClient:
         # La page servie a disparu (chrome-error, about:blank…) : on affiche
         # tout de suite l'écran local « Borne hors ligne » plutôt que de
         # laisser la page d'erreur du navigateur pendant la récupération.
+        # Journal serveur : la remontée est dédupliquée par signature, un
+        # seul enregistrement par épisode de panne.
+        self.printer_api.report_event(
+            "kiosk_page_lost",
+            f"Page patient perdue ({redact_url_for_log(current_url)}), "
+            "récupération")
         self._show_offline_screen()
 
         now = time.monotonic()
@@ -711,6 +728,10 @@ class WebViewClient:
             self.printer.update_token(self.app_token)
         # Une fois l'imprimante initialisée, on la passe à l'API
         self.printer_api.set_print_callback(self.printer.print)
+        # Canal de remontée des incidents borne (report_event) : il emprunte
+        # la file de statuts du Printer — seul détenteur du thread d'envoi,
+        # qui rejoue la file bornée au retour du réseau.
+        self.printer_api.set_event_reporter(self.printer.report_event)
 
     def _refresh_app_token_for_printer(self):
         """Renouvelle le token à la demande du thread de statut imprimante (ex:

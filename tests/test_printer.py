@@ -630,6 +630,53 @@ def test_send_printer_status_deduplicates_identical_states(monkeypatch):
     assert p.status_queue.get_nowait()['error'] == 'error_init'
 
 
+def test_report_event_enqueues_kiosk_incident_with_severity(monkeypatch):
+    """report_event réutilise le canal des statuts : l'incident kiosk_*
+    porte le drapeau is_error explicite (le code ne contient pas « error »,
+    la dérivation historique du serveur manquerait l'icône rouge)."""
+    p = make_printer(check_paper=False, monkeypatch=monkeypatch)
+
+    p.report_event('kiosk_page_dead', 'Page figée', is_error=True)
+
+    item = p.status_queue.get_nowait()
+    assert item['error'] == 'kiosk_page_dead'
+    assert item['message'] == 'Page figée'
+    assert item['is_error'] is True
+    assert item['borne_id'] == 'test-borne'
+
+
+def test_report_event_defaults_to_non_error_and_deduplicates(monkeypatch):
+    """Une récupération n'est pas une erreur : is_error=False est émis,
+    et la déduplication par signature évite d'empiler une ligne par
+    tentative pendant une panne prolongée."""
+    p = make_printer(check_paper=False, monkeypatch=monkeypatch)
+
+    p.report_event('kiosk_page_lost', 'Page patient perdue')
+    p.report_event('kiosk_page_lost', 'Page patient perdue')
+
+    item = p.status_queue.get_nowait()
+    assert item['error'] == 'kiosk_page_lost'
+    assert item['is_error'] is False
+    assert p.status_queue.empty()
+
+
+def test_printer_api_report_event_delegates_to_printer_channel(monkeypatch):
+    """PrinterAPI est une façade : sans Printer branché (pas encore
+    initialisé -> aucun thread de statuts pour porter l'envoi),
+    report_event est un no-op ; une fois branché, il délègue au canal."""
+    api = PrinterAPI()
+
+    api.report_event('kiosk_page_lost', 'page perdue')  # no-op sans canal
+
+    p = make_printer(check_paper=False, monkeypatch=monkeypatch)
+    api.set_event_reporter(p.report_event)
+    api.report_event('kiosk_session_fail', 'ticket refusé', is_error=True)
+
+    item = p.status_queue.get_nowait()
+    assert item['error'] == 'kiosk_session_fail'
+    assert item['is_error'] is True
+
+
 def test_status_thread_sends_periodic_heartbeat(monkeypatch):
     """Sans changement d'état, la borne envoie quand même un signal de vie
     afin que le serveur puisse distinguer OK d'injoignable."""

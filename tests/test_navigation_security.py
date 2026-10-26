@@ -274,7 +274,7 @@ def test_run_disables_external_browser_and_file_urls(monkeypatch, tmp_path):
 
 def _load_config_editor():
     path = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), os.pardir, "config-editor.py"))
+        os.path.dirname(__file__), os.pardir, "config_editor.py"))
     spec = importlib.util.spec_from_file_location("config_editor", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

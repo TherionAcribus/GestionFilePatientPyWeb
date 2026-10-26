@@ -86,8 +86,24 @@ système. Sur la borne cible, il reste nécessaire :
 - la **règle udev** pour l'imprimante ESC/POS (accès USB sans root) ;
 - le **démarrage automatique** à l'ouverture de session ;
 - la configuration (`~/.config/Flowelis/settings.json` + secrets dans le
-  trousseau) — via `config-editor.py` depuis le dépôt, ou en éditant le
-  fichier.
+  trousseau) — via l'éditeur graphique : `./FlowelisBorne --config` (le
+  binaire l'ouvre aussi automatiquement quand la configuration est absente
+  ou refusée), `config_editor.py` depuis le dépôt, ou en éditant le fichier.
+
+## 6. Utiliser le binaire téléchargé
+
+Le fichier unique téléchargé depuis la release n'a **pas le bit exécutable**
+(téléchargement web) — il faut le rendre exécutable une fois :
+
+```bash
+chmod +x FlowelisBorne-*-linux-x86_64
+./FlowelisBorne-*-linux-x86_64
+# Diagnostic sans interface :  ./FlowelisBorne-*-linux-x86_64 --selfcheck
+# Éditeur de configuration :   ./FlowelisBorne-*-linux-x86_64 --config
+```
+
+Sans console ni paramètre, le lancement produit l'interface kiosque ; si la
+configuration est absente ou refusée, l'éditeur graphique s'ouvre en premier.
 
 `install.sh` reste la voie la plus simple pour ces réglages système ; le
 binaire compilé ne dispense que de l'environnement Python/venv.

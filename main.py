@@ -212,7 +212,7 @@ class WebViewClient:
             if settings.is_production:
                 self._config_errors.extend(
                     f"{reason} Configurez un secret propre à cette borne "
-                    "(config-editor.py)." for reason in insecure)
+                    "(config_editor.py)." for reason in insecure)
             else:
                 for reason in insecure:
                     logger.warning("%s Refusé en production ; corrigez avant "
@@ -937,6 +937,27 @@ class WebViewClient:
                 self.printer.cleanup()
 
 
+def _launch_config_editor():
+    """Ouvre l'éditeur graphique de configuration (bloquant jusqu'à fermeture).
+
+    Import paresseux de ``config_editor`` (et donc de tkinter) : la borne ne
+    l'utilise que pour se configurer, et une absence de Tk doit seulement
+    priver la borne de l'éditeur — pas l'empêcher de démarrer.
+    Retourne True si l'éditeur s'est exécuté jusqu'au bout."""
+    try:
+        import config_editor
+    except ImportError:
+        logger.exception("Éditeur de configuration indisponible (tkinter ?).")
+        return False
+    try:
+        config_editor.ConfigEditor().mainloop()
+    except Exception:
+        # FRONTIÈRE : une fenêtre Tk qui plante ne doit pas emporter la borne.
+        logger.exception("L'éditeur de configuration a planté.")
+        return False
+    return True
+
+
 def _selfcheck():
     """Vérifie que le binaire embarque tout le nécessaire, SANS affichage ni
     matériel (``--selfcheck``, utilisé par le workflow de release).
@@ -951,7 +972,8 @@ def _selfcheck():
     problems = []
     for module in ('webview.platforms.qt', 'PySide6.QtWebEngineWidgets',
                    'escpos.printer', 'usb.core',
-                   'keyring.backends.SecretService', 'keyring.backends.chainer'):
+                   'keyring.backends.SecretService', 'keyring.backends.chainer',
+                   'tkinter', 'config_editor'):
         try:
             importlib.import_module(module)
         except Exception as exc:  # tout rapporter : c'est un diagnostic
@@ -979,7 +1001,21 @@ if __name__ == '__main__':
     # pendant le chargement de la configuration. Le niveau est ajusté ensuite
     # selon le réglage debug.
     logging_config.setup_logging()
+
+    if '--config' in sys.argv:
+        logger.info("Ouverture de l'éditeur de configuration (--config).")
+        sys.exit(0 if _launch_config_editor() else 1)
+
     logger.info("Démarrage de la borne Flowelis.")
     client = WebViewClient()
+
+    # Première utilisation ou configuration refusée : l'éditeur graphique
+    # s'ouvre automatiquement AVANT l'interface kiosque — la borne peut ainsi
+    # être configurée sans connaître l'emplacement du fichier. En cas
+    # d'abandon, l'écran d'erreur local reste affiché comme auparavant.
+    if client._config_error:
+        logger.info("Configuration invalide : ouverture de l'éditeur.")
+        if _launch_config_editor():
+            client = WebViewClient()   # Config singleton relue après édition
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()

@@ -24,10 +24,11 @@ HIDDENIMPORTS = [
     'keyring.backends.fail',
 ]
 
-# Modules exclus du build : outils de dev jamais importés par la borne, et
-# tkinter qui ne sert qu'à config-editor.py (script hors du binaire).
+# Modules exclus du build : outils de dev jamais importés par la borne.
+# tkinter est conservé : l'éditeur de configuration (config_editor) est
+# intégré au binaire (--config, lancement auto si configuration invalide).
 DEV_EXCLUDES = [
-    'pytest', 'pyinstaller', 'tkinter',
+    'pytest', 'pyinstaller',
 ]
 
 # datas :

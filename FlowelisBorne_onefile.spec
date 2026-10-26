@@ -22,7 +22,7 @@ HIDDENIMPORTS = [
 ]
 
 DEV_EXCLUDES = [
-    'pytest', 'pyinstaller', 'tkinter',
+    'pytest', 'pyinstaller',
 ]
 
 DATAS = [

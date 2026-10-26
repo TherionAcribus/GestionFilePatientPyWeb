@@ -1,5 +1,5 @@
 # editor_logic.py
-"""Logique pure de l'éditeur de configuration de la borne (``config-editor.py``).
+"""Logique pure de l'éditeur de configuration de la borne (``config_editor.py``).
 
 Extraite du module d'interface (tkinter, non importable — son nom contient un
 tiret et sa construction nécessite un serveur graphique) afin d'être **testable**

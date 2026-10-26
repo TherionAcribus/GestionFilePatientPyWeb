@@ -247,7 +247,7 @@ if [ -d "$DESKTOP_DIR" ]; then
 Type=Application
 Name=Configuration Flowelis Borne
 Comment=Modifier l'URL du serveur, le secret et l'imprimante
-Exec=$PYBIN $ROOT/config-editor.py
+Exec=$PYBIN $ROOT/config_editor.py
 Path=$ROOT
 Icon=flowelis
 Terminal=false
@@ -274,8 +274,8 @@ EOF
 if [ "$OPEN_EDITOR" -eq 1 ]; then
     if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
         info "Ouverture de l'éditeur de configuration…"
-        "$PYBIN" "$ROOT/config-editor.py" || true
+        "$PYBIN" "$ROOT/config_editor.py" || true
     else
-        warn "Pas de session graphique détectée : lancez « $VENV/bin/python config-editor.py » depuis le bureau."
+        warn "Pas de session graphique détectée : lancez « $VENV/bin/python config_editor.py » depuis le bureau."
     fi
 fi

@@ -73,7 +73,7 @@ sudo apt install -y \
   libxcb-cursor0
 ```
 
-> - `python3-tk` : requis par `config-editor.py` **uniquement si vous utilisez
+> - `python3-tk` : requis par `config_editor.py` **uniquement si vous utilisez
 >   le Python système** (un Python géré par `uv` embarque déjà Tcl/Tk).
 > - `libasound2t64` est le nom du paquet sur Ubuntu ≥ 24.04 / Mint 22
 >   (`libasound2` sur les versions antérieures).
@@ -131,8 +131,16 @@ Un modèle est fourni : [`settings.example.json`](settings.example.json).
 ### 4.1 Éditeur graphique (recommandé)
 
 ```bash
-python config-editor.py
+# Depuis le dépôt :
+python config_editor.py
+
+# Depuis le binaire compilé :
+./FlowelisBorne --config
 ```
+
+Le binaire ouvre aussi **automatiquement** cet éditeur au premier démarrage
+ou quand la configuration est refusée (fichier absent, illisible ou
+invalide) — aucune connaissance du chemin n'est nécessaire.
 
 L'éditeur **valide** la configuration avant d'enregistrer et propose deux
 diagnostics :
@@ -174,7 +182,7 @@ Cette valeur n'est **jamais** écrite en clair dans `settings.json` : elle est
 conservée dans le **gestionnaire de secrets du système** via `keyring`
 (Gestionnaire d'identifiants Windows, Trousseau macOS, Secret Service Linux).
 `settings.example.json` ne la contient donc pas ; renseignez-la via
-`config-editor.py`.
+`config_editor.py`.
 
 - **Migration automatique** : si un ancien `settings.json` contient encore
   `app_secret` en clair, il est déplacé vers le magasin sécurisé au premier
@@ -307,7 +315,7 @@ La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
 | `errors.py` | Exceptions métier (`BorneError` et ses filles) : panne attendue vs bogue. |
 | `printer.py` | Logique imprimante (impression, papier, statuts, reconnexion) + découplage matériel. |
 | `config.py` | Chargement/validation/sauvegarde de la configuration. |
-| `config-editor.py` | Éditeur graphique + tests serveur/imprimante. |
+| `config_editor.py` | Éditeur graphique + tests serveur/imprimante. |
 | `logging_config.py` | Journalisation (niveaux, rotation, masquage des secrets). |
 | `editor_logic.py` | Logique pure de l'éditeur (testable sans tkinter). |
 | `secret_store.py` | Stockage des secrets dans le magasin du système (keyring). |

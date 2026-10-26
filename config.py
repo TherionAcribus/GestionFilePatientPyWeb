@@ -197,7 +197,7 @@ class Settings:
     # souris est utilisée et se remasque au toucher suivant (cf. main.py).
     hide_cursor: bool = True
     # Secret applicatif de la borne : VIDE par défaut (aucun secret livré dans
-    # le code). À renseigner via config-editor.py ; la validation refuse le
+    # le code). À renseigner via config_editor.py ; la validation refuse le
     # démarrage tant qu'il ne l'est pas.
     printer_id_vendor: str = "0x04b8"
     printer_id_product: str = "0x0202"

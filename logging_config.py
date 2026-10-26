@@ -12,7 +12,7 @@ Utilisation :
     import logging
     logger = logging.getLogger("borne.<composant>")
 
-    # au démarrage du processus (main.py / config-editor.py) :
+    # au démarrage du processus (main.py / config_editor.py) :
     import logging_config
     logging_config.setup_logging()
     logging_config.register_secret(app_secret)   # masquage runtime

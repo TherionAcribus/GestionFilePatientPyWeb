@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -11,6 +12,7 @@ import webview
 from requests.exceptions import RequestException
 
 import logging_config
+import maintenance_pin
 import ui_assets
 from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
 from errors import BorneError, PrinterNotReadyError, SessionUnavailableError, TokenUnavailableError
@@ -48,6 +50,11 @@ PATIENT_PAGE_RECOVERY_INTERVAL = 30
 # main : la sonde part donc dans un thread jetable et, passé ce délai sans
 # retour, la page est rechargée de force.
 DOM_PROBE_TIMEOUT = 90
+
+# Touche de maintenance (maintenance_pin.MAINTENANCE_KEY) : l'éditeur ouvert
+# depuis une borne en service se ferme seul après ce délai sans clavier ni
+# souris, pour que la borne ne reste pas hors service si on l'oublie.
+MAINTENANCE_EDITOR_IDLE_TIMEOUT_S = 10 * 60
 
 
 def _jittered_init_delay(delay):
@@ -175,6 +182,9 @@ class WebViewClient:
         self._last_page_recovery_attempt = None
         self._page_watchdog_stop = threading.Event()
         self._page_watchdog_thread = None
+        # Touche de maintenance pressée : la fenêtre se ferme et __main__
+        # enchaîne sur la configuration puis relance la borne.
+        self.maintenance_requested = False
 
         # Validation stricte de la configuration AVANT démarrage. Une borne mal
         # configurée (fichier illisible, URL invalide, http distant en prod,
@@ -280,6 +290,8 @@ class WebViewClient:
         # Installé avant l'évènement « shown » : le profil Qt existe alors, et
         # toutes les navigations/redirections suivantes passent par l'allowlist.
         self.window.events.before_show += self._install_navigation_guard
+        # Même évènement (exécuté dans le fil Qt) : raccourci de maintenance.
+        self.window.events.before_show += self._install_maintenance_shortcut
         # La fenêtre est prête : on peut désormais naviguer vers /patient si la
         # borne est (ou devient) opérationnelle.
         self.window.events.shown += self._on_window_shown
@@ -818,6 +830,58 @@ class WebViewClient:
         except Exception:
             logger.exception("Installation du garde-navigation impossible.")
 
+    def _install_maintenance_shortcut(self):
+        """Pose le raccourci clavier de maintenance (F10) sur la fenêtre Qt.
+
+        Raccourci Qt natif plutôt que script injecté : il fonctionne sur TOUS
+        les écrans (page patient, « Borne hors ligne », « Configuration
+        invalide »), même si la page ne répond plus. Appelé par l'évènement
+        ``before_show``, que pywebview exécute dans le fil Qt — condition pour
+        créer un objet Qt rattaché à la fenêtre."""
+        try:
+            from PySide6.QtCore import Qt
+            from PySide6.QtGui import QKeySequence, QShortcut
+        except ImportError:
+            logger.warning("Raccourci de maintenance indisponible (Qt absent).")
+            return
+        native = getattr(self.window, "native", None)
+        if native is None:
+            logger.warning("Raccourci de maintenance indisponible (fenêtre "
+                           "native introuvable).")
+            return
+        try:
+            shortcut = QShortcut(QKeySequence(maintenance_pin.MAINTENANCE_KEY),
+                                 native)
+            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(self.request_maintenance)
+            # Référence Python conservée : sans elle, le raccourci peut être
+            # collecté et cesser de répondre.
+            native.maintenance_shortcut = shortcut
+        except Exception:
+            # FRONTIÈRE Qt : sans raccourci, la borne doit quand même tourner.
+            logger.exception("Installation du raccourci de maintenance "
+                             "impossible.")
+            return
+        logger.info("Touche de maintenance : %s.", maintenance_pin.MAINTENANCE_KEY)
+
+    def request_maintenance(self):
+        """Touche de maintenance pressée : ferme la fenêtre kiosque.
+
+        La suite (code PIN, éditeur, relance) se fait APRÈS la boucle Qt, dans
+        ``__main__`` : Tk et Qt ne cohabitent pas dans une même boucle, et une
+        borne relancée repart d'une configuration relue proprement."""
+        if self.maintenance_requested:
+            return
+        self.maintenance_requested = True
+        logger.info("Touche de maintenance pressée : fermeture de la borne "
+                    "pour configuration.")
+        try:
+            self.window.destroy()
+        except Exception:
+            logger.exception("Fermeture de la fenêtre pour maintenance "
+                             "impossible.")
+            self.maintenance_requested = False
+
     def _on_window_shown(self):
         """La fenêtre est affichée (boucle GUI démarrée) : on marque la fenêtre
         prête et on charge /patient si la borne est déjà opérationnelle."""
@@ -937,25 +1001,100 @@ class WebViewClient:
                 self.printer.cleanup()
 
 
-def _launch_config_editor():
+def _launch_config_editor(**editor_options):
     """Ouvre l'éditeur graphique de configuration (bloquant jusqu'à fermeture).
 
     Import paresseux de ``config_editor`` (et donc de tkinter) : la borne ne
     l'utilise que pour se configurer, et une absence de Tk doit seulement
     priver la borne de l'éditeur — pas l'empêcher de démarrer.
-    Retourne True si l'éditeur s'est exécuté jusqu'au bout."""
+    ``editor_options`` est transmis à ``ConfigEditor`` (``kiosk_follows``,
+    ``idle_timeout_s``). Retourne True si l'éditeur s'est exécuté jusqu'au
+    bout."""
     try:
         import config_editor
     except ImportError:
         logger.exception("Éditeur de configuration indisponible (tkinter ?).")
         return False
     try:
-        config_editor.ConfigEditor().mainloop()
+        config_editor.ConfigEditor(**editor_options).mainloop()
     except Exception:
         # FRONTIÈRE : une fenêtre Tk qui plante ne doit pas emporter la borne.
         logger.exception("L'éditeur de configuration a planté.")
         return False
     return True
+
+
+def _maintenance_pin_granted(stored_hash):
+    """Demande le code PIN de maintenance s'il y en a un.
+
+    Sans PIN défini, l'accès est direct (le clavier suffit à écarter les
+    patients). Si la fenêtre du PIN ne peut pas s'afficher, l'accès est
+    refusé : la borne repart simplement en service."""
+    if not maintenance_pin.pin_required(stored_hash):
+        return True
+    try:
+        import config_editor
+        return config_editor.ask_maintenance_pin(stored_hash)
+    except Exception:
+        # FRONTIÈRE : Tk absent ou en panne — on refuse plutôt que d'ouvrir.
+        logger.exception("Demande du code PIN de maintenance impossible.")
+        return False
+
+
+def _run_maintenance():
+    """Touche de maintenance : code PIN éventuel, puis éditeur.
+
+    Appelé après la fermeture de la fenêtre kiosque ; la borne est relancée
+    ensuite dans tous les cas (PIN refusé, éditeur annulé ou enregistré)."""
+    if not _maintenance_pin_granted(Config().settings.maintenance_pin_hash):
+        logger.info("Accès maintenance non accordé : relance de la borne.")
+        return
+    logger.info("Accès maintenance accordé : ouverture de la configuration.")
+    _launch_config_editor(kiosk_follows=True,
+                          idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S)
+
+
+def _restart_command(argv=None, executable=None, frozen=None):
+    """Ligne de commande qui relance la borne à l'identique.
+
+    Binaire PyInstaller : le binaire lui-même. Depuis les sources : le même
+    interpréteur sur ce fichier. Les options de lancement sont conservées,
+    sauf ``--config`` / ``--selfcheck`` qui ne mènent pas à la borne."""
+    argv = sys.argv if argv is None else argv
+    executable = sys.executable if executable is None else executable
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    options = [a for a in argv[1:] if a not in ("--config", "--selfcheck")]
+    if frozen:
+        return [executable, *options]
+    return [executable, os.path.abspath(__file__), *options]
+
+
+def _restart_kiosk():
+    """Relance la borne dans un processus neuf (configuration relue, Qt
+    réinitialisé) — plus sûr que de redémarrer Qt WebEngine dans ce processus.
+
+    Linux : ``execv`` garde le même PID (service systemd, autostart).
+    Windows : ``execv`` y crée de toute façon un autre processus ; on lance
+    donc le nouveau puis on sort. Binaire PyInstaller « onefile » :
+    ``PYINSTALLER_RESET_ENVIRONMENT`` fait repartir le binaire comme un
+    lancement neuf au lieu de réutiliser le dossier extrait de celui-ci."""
+    command = _restart_command()
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    logger.info("Relance de la borne.")
+    logging.shutdown()   # vide les fichiers journaux avant de quitter
+    try:
+        if os.name == "posix":
+            os.execve(command[0], command, env)
+        # Commande construite par _restart_command : notre propre exécutable.
+        subprocess.Popen(command, env=env, close_fds=True)
+    except OSError:
+        logging_config.setup_logging()
+        logger.exception("Relance de la borne impossible.")
+        # Code non nul : un superviseur (systemd Restart=on-failure) relance.
+        sys.exit(1)
+    sys.exit(0)
 
 
 def _selfcheck():
@@ -1015,7 +1154,13 @@ if __name__ == '__main__':
     # d'abandon, l'écran d'erreur local reste affiché comme auparavant.
     if client._config_error:
         logger.info("Configuration invalide : ouverture de l'éditeur.")
-        if _launch_config_editor():
+        if _launch_config_editor(kiosk_follows=True):
             client = WebViewClient()   # Config singleton relue après édition
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()
+
+    # Touche de maintenance : la fenêtre s'est fermée pour laisser place à la
+    # configuration ; la borne est relancée ensuite, quoi qu'il arrive.
+    if client.maintenance_requested:
+        _run_maintenance()
+        _restart_kiosk()

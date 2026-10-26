@@ -142,6 +142,30 @@ Le binaire ouvre aussi **automatiquement** cet éditeur au premier démarrage
 ou quand la configuration est refusée (fichier absent, illisible ou
 invalide) — aucune connaissance du chemin n'est nécessaire.
 
+### 4.2 Touche de maintenance (F10)
+
+Sur une borne **en service**, la touche **F10** d'un clavier branché ouvre la
+configuration sans terminal ni redémarrage manuel (F11 reste la bascule
+plein écran) :
+
+1. la fenêtre kiosque se ferme ;
+2. si un **code PIN de maintenance** est défini, il est demandé (3 essais,
+   abandon après 60 s sans saisie) ;
+3. l'éditeur s'ouvre ;
+4. à sa fermeture — enregistrée ou non — **la borne redémarre d'elle-même**
+   avec la configuration en vigueur.
+
+La touche fonctionne sur tous les écrans : page patient, « Borne hors ligne »
+et « Configuration invalide ». Un éditeur oublié ouvert se ferme sans
+enregistrer après **10 minutes** sans clavier ni souris, et la borne reprend
+son service.
+
+Le **code PIN est facultatif** (section « Maintenance » de l'éditeur, 4 à 12
+chiffres) : le patient n'a pas de clavier, la touche suffit en général. Il
+n'est jamais stocké en clair (empreinte PBKDF2 salée dans `settings.json`).
+**PIN oublié** : `--config` (ou `python config_editor.py`) lancé depuis le
+système ouvre l'éditeur sans le demander, et permet de le supprimer.
+
 L'éditeur **valide** la configuration avant d'enregistrer et propose deux
 diagnostics :
 
@@ -150,12 +174,12 @@ diagnostics :
   en une seule tentative bornée.
 - **Tester l'imprimante** : ouverture du périphérique USB (sans imprimer).
 
-### 4.2 Champs
+### 4.3 Champs
 
 | Champ | Type | Description |
 |-------|------|-------------|
 | `base_url` | str | URL racine du serveur. **HTTP autorisé uniquement pour `localhost` ou en mode `debug`** ; un serveur distant doit être en **HTTPS**. |
-| `app_secret` | str | Secret d'application — **identité machine** de la borne (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.3). Sert à obtenir le jeton applicatif, lui-même échangé contre un ticket de session signé (`/patient/kiosk_login/…`) — la borne n'a plus de compte utilisateur. |
+| `app_secret` | str | Secret d'application — **identité machine** de la borne (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.4). Sert à obtenir le jeton applicatif, lui-même échangé contre un ticket de session signé (`/patient/kiosk_login/…`) — la borne n'a plus de compte utilisateur. |
 | `printer_id_vendor` | str | ID vendeur USB, hexadécimal (ex. `0x04b8`). |
 | `printer_id_product` | str | ID produit USB, hexadécimal (ex. `0x0202`). |
 | `printer_model` | str | Profil python-escpos (ex. `TM-T88II`). |
@@ -164,6 +188,7 @@ diagnostics :
 | `debug` | bool | Mode développement (autorise HTTP distant, logs DEBUG). `false` = production. |
 | `hide_cursor` | bool | Masquer le curseur (borne tactile). `false` pour un poste de maintenance souris. |
 | `borne_id` | str | Identifiant de la borne joint aux statuts (vide = nom d'hôte). |
+| `maintenance_pin_hash` | str | Empreinte du code PIN de la touche de maintenance (vide = pas de PIN). Se règle dans l'éditeur, jamais à la main. |
 
 > **Garde-fous** : la borne **refuse de démarrer** si la configuration est
 > invalide (URL/secret/identifiants USB/types) ou si le secret d'application
@@ -176,7 +201,7 @@ diagnostics :
 > restent refusées en production par une denylist, qui couvre les
 > installations existantes.
 
-### 4.3 Stockage du secret (`app_secret`)
+### 4.4 Stockage du secret (`app_secret`)
 
 Cette valeur n'est **jamais** écrite en clair dans `settings.json` : elle est
 conservée dans le **gestionnaire de secrets du système** via `keyring`
@@ -318,4 +343,5 @@ La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
 | `config_editor.py` | Éditeur graphique + tests serveur/imprimante. |
 | `logging_config.py` | Journalisation (niveaux, rotation, masquage des secrets). |
 | `editor_logic.py` | Logique pure de l'éditeur (testable sans tkinter). |
+| `maintenance_pin.py` | Touche de maintenance et code PIN (empreinte, vérification). |
 | `secret_store.py` | Stockage des secrets dans le magasin du système (keyring). |

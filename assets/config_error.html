@@ -2,7 +2,8 @@
 <!--
   Écran affiché quand la borne REFUSE de démarrer (configuration invalide ou non
   sécurisée). La liste des problèmes remplace le marqueur ERROR_ITEMS de la
-  liste ci-dessous ; chaque message est échappé par
+  liste ci-dessous (et la touche de maintenance dans le texte d'aide) ;
+  chaque message est échappé par
   ui_assets.build_config_error_html() : une valeur de configuration ne peut donc
   pas injecter de balise ici.
 
@@ -41,7 +42,8 @@
     <h1>Configuration invalide</h1>
     <p>La borne refuse de démarrer pour les raisons suivantes :</p>
     <ul>__ERROR_ITEMS__</ul>
-    <p>Ouvrez l'éditeur de configuration pour corriger ces points.</p>
+    <p>Pour corriger ces points, appuyez sur la touche <strong>__MAINTENANCE_KEY__</strong>
+       d'un clavier branché à la borne : la configuration s'ouvre.</p>
   </div>
 </body>
 </html>

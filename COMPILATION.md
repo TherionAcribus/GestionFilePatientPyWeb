@@ -104,6 +104,9 @@ chmod +x FlowelisBorne-*-linux-x86_64
 
 Sans console ni paramètre, le lancement produit l'interface kiosque ; si la
 configuration est absente ou refusée, l'éditeur graphique s'ouvre en premier.
+Borne en service : la touche **F10** (clavier branché) ferme le kiosque,
+ouvre la configuration (après le code PIN s'il est défini) puis relance le
+binaire — voir README §4.2.
 
 `install.sh` reste la voie la plus simple pour ces réglages système ; le
 binaire compilé ne dispense que de l'environnement Python/venv.

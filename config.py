@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from urllib.parse import unquote, urlparse, urlunparse
 
+import maintenance_pin
 import secret_store
 
 logger = logging.getLogger("borne.config")
@@ -207,6 +208,9 @@ class Settings:
     # Identifiant de la borne joint aux statuts imprimante. Vide => le hostname
     # de la machine est utilisé par défaut (voir Printer.__init__).
     borne_id: str = ""
+    # Empreinte du code PIN demandé par la touche de maintenance (F10).
+    # Vide = aucun PIN. Jamais le PIN en clair (cf. maintenance_pin).
+    maintenance_pin_hash: str = ""
 
     @property
     def url(self) -> str:
@@ -336,6 +340,7 @@ class Settings:
         for name in (
             "base_url", "printer_id_vendor",
             "printer_id_product", "printer_model", "app_secret", "borne_id",
+            "maintenance_pin_hash",
         ):
             if not isinstance(getattr(self, name), str):
                 errors.append(
@@ -354,6 +359,14 @@ class Settings:
         errors.extend(self.usb_id_errors("printer_id_product", self.printer_id_product))
         if isinstance(self.printer_model, str) and not self.printer_model.strip():
             errors.append("Le modèle d'imprimante ne peut pas être vide.")
+
+        # Code PIN de maintenance : vide (aucun PIN) ou empreinte lisible.
+        pin_hash = self.maintenance_pin_hash
+        if (isinstance(pin_hash, str) and pin_hash
+                and not maintenance_pin.is_valid_hash(pin_hash)):
+            errors.append(
+                "Le code PIN de maintenance enregistré est illisible : "
+                "redéfinissez-le (ou supprimez-le) dans la configuration.")
 
         return errors
 

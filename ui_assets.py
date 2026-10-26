@@ -32,6 +32,8 @@ import logging
 import re
 from pathlib import Path
 
+from maintenance_pin import MAINTENANCE_KEY
+
 logger = logging.getLogger("borne.ui")
 
 # Dossier des ressources, résolu par rapport à CE fichier (et non au répertoire
@@ -125,7 +127,10 @@ def build_config_error_html(errors) -> str:
     else:
         items = "<li>Configuration invalide.</li>"
     try:
-        return render_asset("config_error.html", {"ERROR_ITEMS": items})
+        return render_asset("config_error.html", {
+            "ERROR_ITEMS": items,
+            "MAINTENANCE_KEY": html.escape(MAINTENANCE_KEY),
+        })
     except AssetError:
         logger.exception("Écran d'erreur de configuration indisponible, "
                          "repli minimal.")

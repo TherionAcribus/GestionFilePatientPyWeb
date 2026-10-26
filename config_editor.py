@@ -10,7 +10,9 @@ from tkinter import messagebox, ttk
 
 import editor_logic
 import logging_config
+import maintenance_pin
 from config import Config, Settings, resolve_server_url
+from maintenance_pin import MAINTENANCE_KEY
 
 logger = logging.getLogger("borne.editor")
 
@@ -22,13 +24,32 @@ _DANGER_COLOR = "#b00020"
 # Timeout (connexion, lecture) du test de joignabilité du serveur.
 _TEST_TIMEOUT = (5, 10)
 
+# Fenêtre du code PIN : nombre d'essais, puis abandon (la borne repart).
+PIN_MAX_ATTEMPTS = 3
+# Sans saisie pendant ce délai, la fenêtre du PIN se ferme : une touche de
+# maintenance pressée par erreur ne laisse pas la borne hors service.
+PIN_DIALOG_TIMEOUT_S = 60
+
+# Période de vérification de l'inactivité de l'éditeur.
+_IDLE_CHECK_MS = 5000
+
 
 class ConfigEditor(tk.Tk):
-    def __init__(self):
+    def __init__(self, kiosk_follows=False, idle_timeout_s=None):
+        """``kiosk_follows`` : la borne démarre (ou redémarre) d'elle-même à
+        la fermeture de l'éditeur — ouverture automatique au démarrage ou
+        touche de maintenance. Les textes l'indiquent au lieu de demander un
+        redémarrage manuel.
+
+        ``idle_timeout_s`` : si renseigné, l'éditeur se ferme sans
+        enregistrer après ce délai sans clavier ni souris. Utilisé par la
+        touche de maintenance, pour qu'une borne en service ne reste pas
+        bloquée sur la configuration si on l'oublie ouverte."""
         super().__init__()
 
         self.title("Configuration — Flowelis Borne")
         self.config = Config()
+        self._kiosk_follows = kiosk_follows
 
         # Configuration de la fenêtre
         self.geometry("600x800")
@@ -45,6 +66,18 @@ class ConfigEditor(tk.Tk):
         # Avertir avant de fermer la fenêtre si des changements ne sont pas
         # enregistrés (croix de la fenêtre + bouton « Annuler »).
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # La borne vient de quitter le plein écran : l'éditeur doit passer
+        # devant, clavier prêt.
+        _bring_to_front(self)
+
+        if idle_timeout_s:
+            self._idle_timeout_s = idle_timeout_s
+            self._last_activity = time.monotonic()
+            for sequence in ("<KeyPress>", "<ButtonPress>", "<Motion>",
+                             "<MouseWheel>"):
+                self.bind_all(sequence, self._note_activity, add="+")
+            self.after(_IDLE_CHECK_MS, self._check_idle)
 
     def create_widgets(self):
         # Frame principal avec scrollbar
@@ -100,11 +133,17 @@ class ConfigEditor(tk.Tk):
 
         # Bandeau : toute la configuration de la borne est lue au démarrage et
         # n'est jamais rechargée à chaud. Les modifications enregistrées ici ne
-        # prennent donc effet qu'après un redémarrage de l'application borne.
+        # prennent donc effet qu'après un redémarrage de l'application borne
+        # — automatique quand la borne attend la fermeture de l'éditeur.
+        if self._kiosk_follows:
+            banner = ("ℹ La borne démarrera avec cette configuration à la "
+                      "fermeture de cette fenêtre.")
+        else:
+            banner = ("ℹ Les modifications ne prennent effet qu'après "
+                      "redémarrage de la borne (aucun rechargement à chaud).")
         tk.Label(
             scrollable_frame,
-            text=("ℹ Les modifications ne prennent effet qu'après redémarrage "
-                  "de la borne (aucun rechargement à chaud)."),
+            text=banner,
             fg="#0b5394", wraplength=540, justify="left",
         ).grid(row=row, column=0, columnspan=3, padx=5, pady=(0, 8), sticky="w")
         row += 1
@@ -156,6 +195,8 @@ class ConfigEditor(tk.Tk):
 
                 row += 1
 
+        row = self._create_maintenance_section(scrollable_frame, row)
+
         # Met en évidence le mode debug et le secret par défaut dès que l'un
         # des champs concernés change (et une première fois au chargement).
         for name in ("debug", "app_secret"):
@@ -199,6 +240,78 @@ class ConfigEditor(tk.Tk):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def destroy(self):
+        _cancel_pending_callbacks(self)
+        super().destroy()
+
+    def _create_maintenance_section(self, parent, row):
+        """Section « Maintenance » : touche d'accès et code PIN optionnel.
+
+        Le PIN n'est jamais réaffiché : on n'indique que sa présence. Les
+        champs de saisie ne sont pas des champs de ``Settings`` (seule
+        l'empreinte l'est) et restent hors de ``self.variables``."""
+        ttk.Label(parent, text="Maintenance", font=('Helvetica', 10, 'bold')).grid(
+            row=row, column=0, columnspan=2, pady=(10, 5), sticky="w")
+        row += 1
+        tk.Label(
+            parent,
+            text=(f"Touche {MAINTENANCE_KEY} sur un clavier branché à la "
+                  "borne : ouvre cette configuration, puis relance la borne "
+                  "à la fermeture. Code PIN facultatif (chiffres "
+                  f"uniquement, {maintenance_pin.PIN_MIN_LENGTH} à "
+                  f"{maintenance_pin.PIN_MAX_LENGTH}) ; laissez les champs "
+                  "vides pour ne rien changer."),
+            wraplength=540, justify="left",
+        ).grid(row=row, column=0, columnspan=3, padx=5, pady=(0, 4), sticky="w")
+        row += 1
+
+        ttk.Label(parent, text="Code PIN actuel:").grid(
+            row=row, column=0, padx=5, pady=2, sticky="e")
+        self._pin_status_label = ttk.Label(parent, text="")
+        self._pin_status_label.grid(row=row, column=1, columnspan=2, padx=5,
+                                    pady=2, sticky="w")
+        row += 1
+
+        self._pin_new = tk.StringVar()
+        self._pin_confirm = tk.StringVar()
+        self._pin_remove = tk.BooleanVar(value=False)
+        for var, label in ((self._pin_new, "Nouveau code PIN:"),
+                           (self._pin_confirm, "Confirmer le code PIN:")):
+            ttk.Label(parent, text=label).grid(
+                row=row, column=0, padx=5, pady=2, sticky="e")
+            ttk.Entry(parent, show="*", textvariable=var).grid(
+                row=row, column=1, padx=5, pady=2, sticky="w")
+            row += 1
+
+        self._pin_remove_check = ttk.Checkbutton(
+            parent, text="Supprimer le code PIN actuel",
+            variable=self._pin_remove)
+        self._pin_remove_check.grid(row=row, column=1, columnspan=2, padx=5,
+                                    pady=2, sticky="w")
+        row += 1
+        return row
+
+    def _refresh_pin_section(self):
+        """Vide les saisies du PIN et affiche l'état du PIN enregistré."""
+        self._pin_new.set("")
+        self._pin_confirm.set("")
+        self._pin_remove.set(False)
+        stored = self.config.settings.maintenance_pin_hash
+        if maintenance_pin.is_valid_hash(stored):
+            status = "défini"
+        elif stored:
+            status = "illisible — à redéfinir ou à supprimer"
+        else:
+            status = (f"aucun ({MAINTENANCE_KEY} ouvre directement la "
+                      "configuration)")
+        self._pin_status_label.config(text=status)
+        self._pin_remove_check.config(state="normal" if stored else "disabled")
+
+    def _pin_change_pending(self) -> bool:
+        """Vrai si une modification du PIN est saisie (non enregistrée)."""
+        return bool(self._pin_new.get() or self._pin_confirm.get()
+                    or self._pin_remove.get())
+
     def load_config(self):
         """Charge la configuration dans les champs et mémorise l'état de départ
         (pour détecter les modifications non enregistrées)."""
@@ -206,6 +319,7 @@ class ConfigEditor(tk.Tk):
             value = getattr(self.config.settings, field_name)
             var.set(value)
         self._loaded_values = self._current_form_values()
+        self._refresh_pin_section()
         self._refresh_security_highlights()
 
     def _current_form_values(self) -> dict:
@@ -214,8 +328,29 @@ class ConfigEditor(tk.Tk):
 
     def _is_dirty(self) -> bool:
         """Vrai si le formulaire diffère de l'état chargé/enregistré."""
-        return editor_logic.values_differ(self._loaded_values,
-                                          self._current_form_values())
+        return (editor_logic.values_differ(self._loaded_values,
+                                           self._current_form_values())
+                or self._pin_change_pending())
+
+    # ------------------------------------------------------------------
+    # Inactivité (touche de maintenance)
+    # ------------------------------------------------------------------
+    def _note_activity(self, _event=None):
+        self._last_activity = time.monotonic()
+
+    def _check_idle(self):
+        """Ferme l'éditeur sans enregistrer après une trop longue inactivité :
+        la borne en service reprend alors d'elle-même."""
+        idle = time.monotonic() - self._last_activity
+        if idle >= self._idle_timeout_s:
+            logger.warning(
+                "Configuration fermée après %d min d'inactivité%s.",
+                self._idle_timeout_s // 60,
+                " (modifications non enregistrées abandonnées)"
+                if self._is_dirty() else "")
+            self.destroy()
+            return
+        self.after(_IDLE_CHECK_MS, self._check_idle)
 
     def _settings_from_form(self):
         """Construit un objet Settings à partir des champs SAISIS (sans
@@ -302,6 +437,16 @@ class ConfigEditor(tk.Tk):
             messagebox.showerror("Erreur", f"Valeurs invalides : {e}")
             return
 
+        # Code PIN de maintenance : appliqué AVANT la validation, pour qu'une
+        # empreinte illisible puisse être remplacée ou supprimée ici.
+        pin_hash, pin_error = maintenance_pin.resolve_pin_change(
+            self._pin_new.get(), self._pin_confirm.get(),
+            self._pin_remove.get(), settings.maintenance_pin_hash)
+        if pin_error:
+            messagebox.showerror("Code PIN de maintenance", pin_error)
+            return
+        settings.maintenance_pin_hash = pin_hash
+
         errors = settings.validate()
         if errors:
             messagebox.showerror(
@@ -330,11 +475,15 @@ class ConfigEditor(tk.Tk):
 
         # État enregistré : plus rien à signaler comme « non enregistré ».
         self._loaded_values = self._current_form_values()
-        messagebox.showinfo(
-            "Succès",
-            "Configuration enregistrée avec succès.\nRedémarrez "
-            "l'application principale pour appliquer les changements."
-        )
+        self._refresh_pin_section()
+        if self._kiosk_follows:
+            message = ("Configuration enregistrée avec succès.\nLa borne "
+                       "va démarrer avec cette configuration.")
+        else:
+            message = ("Configuration enregistrée avec succès.\nRedémarrez "
+                       "l'application principale pour appliquer les "
+                       "changements.")
+        messagebox.showinfo("Succès", message)
         self.destroy()
 
     # ------------------------------------------------------------------
@@ -571,6 +720,116 @@ class ConfigEditor(tk.Tk):
         with contextlib.suppress(Exception):
             printer.close()
         return True, f"Imprimante détectée et ouverte avec succès (modèle {model})."
+
+
+def _cancel_pending_callbacks(window):
+    """Annule les rappels ``after`` encore planifiés par ``window``.
+
+    La fenêtre du PIN et l'éditeur se succèdent dans le même processus : un
+    rappel resté en attente se déclencherait sinon dans la boucle suivante,
+    sur une fenêtre détruite (« invalid command name »)."""
+    with contextlib.suppress(tk.TclError):
+        for after_id in window.tk.splitlist(window.tk.call("after", "info")):
+            window.after_cancel(after_id)
+
+
+def _bring_to_front(window):
+    """Fait passer ``window`` au premier plan avec le focus clavier.
+
+    Le « toujours au-dessus » est levé juste après : il ne sert qu'à passer
+    devant le bureau au moment où la borne quitte le plein écran, sans
+    ensuite masquer les boîtes de dialogue de l'éditeur."""
+    window.lift()
+    window.attributes("-topmost", True)
+    window.after(300, lambda: window.attributes("-topmost", False))
+    window.after(50, window.focus_force)
+
+
+class MaintenancePinDialog(tk.Tk):
+    """Demande le code PIN de maintenance avant d'ouvrir la configuration.
+
+    ``granted`` passe à True si le code est bon. Fermeture, Échap, essais
+    épuisés ou inactivité : ``granted`` reste False et la borne repart."""
+
+    def __init__(self, stored_hash, max_attempts=PIN_MAX_ATTEMPTS,
+                 timeout_s=PIN_DIALOG_TIMEOUT_S):
+        super().__init__()
+        self.title("Maintenance — Flowelis Borne")
+        self.resizable(False, False)
+        self.granted = False
+        self._stored_hash = stored_hash
+        self._attempts_left = max_attempts
+        self._timeout_s = timeout_s
+        self._last_activity = time.monotonic()
+
+        frame = ttk.Frame(self, padding=24)
+        frame.pack()
+        ttk.Label(frame, text="Code PIN de maintenance",
+                  font=('Helvetica', 12, 'bold')).pack(anchor="w")
+        self._pin = tk.StringVar()
+        self._entry = ttk.Entry(frame, show="*", textvariable=self._pin,
+                                width=16, font=('Helvetica', 16))
+        self._entry.pack(pady=(10, 6), fill="x")
+        self._message = tk.Label(frame, text="", fg=_DANGER_COLOR)
+        self._message.pack(anchor="w")
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(pady=(10, 0), fill="x")
+        ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Valider", command=self._submit).pack(
+            side=tk.RIGHT, padx=(0, 6))
+
+        self.bind("<Return>", lambda _e: self._submit())
+        self.bind("<KP_Enter>", lambda _e: self._submit())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind_all("<KeyPress>", self._note_activity, add="+")
+
+        # Centré à l'écran (la borne vient de fermer sa fenêtre plein écran).
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() - self.winfo_reqwidth()) // 2
+        y = (self.winfo_screenheight() - self.winfo_reqheight()) // 3
+        self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _bring_to_front(self)
+        self.after(100, self._entry.focus_force)
+        self.after(1000, self._check_timeout)
+
+    def destroy(self):
+        _cancel_pending_callbacks(self)
+        super().destroy()
+
+    def _note_activity(self, _event=None):
+        self._last_activity = time.monotonic()
+
+    def _check_timeout(self):
+        if time.monotonic() - self._last_activity >= self._timeout_s:
+            logger.info("Saisie du code PIN de maintenance abandonnée "
+                        "(inactivité).")
+            self.destroy()
+            return
+        self.after(1000, self._check_timeout)
+
+    def _submit(self):
+        if maintenance_pin.verify_pin(self._pin.get(), self._stored_hash):
+            self.granted = True
+            self.destroy()
+            return
+        self._attempts_left -= 1
+        self._pin.set("")
+        if self._attempts_left <= 0:
+            logger.warning("Accès maintenance refusé : code PIN incorrect, "
+                           "essais épuisés.")
+            self.destroy()
+            return
+        logger.warning("Code PIN de maintenance incorrect.")
+        self._message.config(
+            text=f"Code incorrect — {self._attempts_left} essai(s) restant(s).")
+
+
+def ask_maintenance_pin(stored_hash) -> bool:
+    """Affiche la demande de code PIN ; True si le bon code a été saisi."""
+    dialog = MaintenancePinDialog(stored_hash)
+    dialog.mainloop()
+    return dialog.granted
 
 
 if __name__ == "__main__":

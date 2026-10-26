@@ -150,6 +150,10 @@ class WebViewClient:
         self._operational_lock = threading.Lock()
         self._window_ready = threading.Event()
         self._patient_page_shown = False
+        # L'écran local « Borne hors ligne » est-il déjà affiché à la place
+        # d'une page d'erreur ? Évite de le réinjecter à chaque passage du
+        # watchdog.
+        self._offline_screen_shown = False
         self._init_stop = threading.Event()
         self._init_thread = None
         # URL de connexion signée (ticket borne) obtenue auprès du serveur ;
@@ -449,6 +453,8 @@ class WebViewClient:
             if not self._patient_login_url:
                 raise SessionUnavailableError("aucun ticket de session obtenu")
             self.window.load_url(self._patient_login_url)
+            # La page patient remplace l'écran hors ligne s'il était affiché.
+            self._offline_screen_shown = False
         except Exception:
             # Frontière pywebview (le moteur peut lever selon le backend Qt) :
             # on annule le marquage pour qu'une tentative ultérieure soit
@@ -511,6 +517,10 @@ class WebViewClient:
             self._patient_login_url = self._fetch_patient_login_url()
         except SessionUnavailableError as e:
             logger.warning("Impossible de renouveler la session borne : %s", e)
+            # Le serveur ne délivre plus de ticket : /login n'est pas utile
+            # au patient, on lui substitue l'écran hors ligne. Le watchdog de
+            # page poursuivra les tentatives (l'URL n'est plus dans base_url).
+            self._show_offline_screen()
             return
         self.window.load_url(self._patient_login_url)
 
@@ -542,6 +552,28 @@ class WebViewClient:
                 # ponctuelle du moteur ou d'une lecture d'URL.
                 logger.exception("Erreur inattendue dans la surveillance de page.")
 
+    def _show_offline_screen(self):
+        """Substitue l'écran local « Borne hors ligne » à la page affichée.
+
+        La WebView est restée sur une page d'erreur du navigateur (ou sur une
+        page de connexion alors que le serveur est injoignable) : le patient
+        y retrouve le même écran Flowelis qu'au démarrage hors ligne, pendant
+        que les superviseurs continuent de retenter la connexion. Une seule
+        injection par panne — le watchdog ne doit pas la recharger en boucle.
+        """
+        if getattr(self, '_offline_screen_shown', False) or not self.window:
+            return
+        load_html = getattr(self.window, 'load_html', None)
+        if not callable(load_html):
+            return
+        try:
+            load_html(ui_assets.offline_html())
+            self._offline_screen_shown = True
+        except Exception:
+            # Frontière Qt/pywebview : sans écran local, la page d'erreur
+            # reste affichée — le watchdog réessaiera au prochain passage.
+            logger.exception("Écran hors ligne non affichable.")
+
     def _recover_patient_page(self):
         """Recharge /patient quand la fenêtre n'affiche plus le serveur.
 
@@ -558,6 +590,11 @@ class WebViewClient:
             current_url = None
         if current_url and url_is_within_base(current_url, self.base_url):
             return
+
+        # La page servie a disparu (chrome-error, about:blank…) : on affiche
+        # tout de suite l'écran local « Borne hors ligne » plutôt que de
+        # laisser la page d'erreur du navigateur pendant la récupération.
+        self._show_offline_screen()
 
         now = time.monotonic()
         if (self._last_page_recovery_attempt is not None

@@ -57,6 +57,7 @@ class _FakeWindow:
     def __init__(self, url):
         self._url = url
         self.loaded_urls = []
+        self.loaded_html = []
 
     def get_current_url(self):
         return self._url
@@ -64,6 +65,9 @@ class _FakeWindow:
     def load_url(self, url):
         self._url = url
         self.loaded_urls.append(url)
+
+    def load_html(self, html):
+        self.loaded_html.append(html)
 
     def evaluate_js(self, _script):
         pass
@@ -80,6 +84,7 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client._last_relogin_attempt = None
     client._last_page_recovery_attempt = None
     client._patient_page_shown = False
+    client._offline_screen_shown = False
     client.operational = False
     client._operational_lock = threading.Lock()
     client._window_ready = threading.Event()
@@ -364,3 +369,35 @@ def test_run_uses_persistent_webview_storage(monkeypatch, tmp_path):
         "private_mode": False,
         "storage_path": str(storage_path),
     }]
+
+
+def test_page_watchdog_shows_offline_screen_while_server_down():
+    """Page morte + serveur injoignable : la WebView affiche l'écran local
+    « Borne hors ligne » plutôt que la page d'erreur du navigateur, jusqu'à
+    ce qu'un ticket de session redevienne disponible."""
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    window = _FakeWindow("chrome-error://webengine/")
+    client.window = window
+    client.session = _FakeSession(_FakeResponse(500, {}))
+
+    client._recover_patient_page()
+
+    assert window.loaded_html != []
+    assert client.connected is False
+    assert client._offline_screen_shown is True
+
+    # Le serveur revient : le passage suivant du watchdog retente un ticket
+    # et recharge la page patient à la place de l'écran hors ligne.
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/retour"}))
+    client._last_page_recovery_attempt -= main.PATIENT_PAGE_RECOVERY_INTERVAL + 1
+    client._recover_patient_page()
+
+    assert window.loaded_urls == [
+        "http://127.0.0.1:5000/patient/kiosk_login/retour"]
+    assert client.connected is True
+    assert client._offline_screen_shown is False

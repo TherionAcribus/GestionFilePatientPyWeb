@@ -20,6 +20,7 @@ des doublures.
 import os
 import sys
 import threading
+import time
 
 import pytest
 from requests.exceptions import ConnectionError as ReqConnectionError
@@ -85,6 +86,9 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client._last_page_recovery_attempt = None
     client._patient_page_shown = False
     client._offline_screen_shown = False
+    client._dom_probe_pending = False
+    client._dom_probe_sent_at = None
+    client._evaluate_js_blocking = None
     client.operational = False
     client._operational_lock = threading.Lock()
     client._window_ready = threading.Event()
@@ -401,3 +405,48 @@ def test_page_watchdog_shows_offline_screen_while_server_down():
         "http://127.0.0.1:5000/patient/kiosk_login/retour"]
     assert client.connected is True
     assert client._offline_screen_shown is False
+
+
+def test_page_watchdog_forces_reload_when_dom_is_dead():
+    """URL /patient valide mais moteur muet : après le timeout de la sonde
+    DOM, la borne force une récupération complète (ticket + navigation)."""
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client.window = window
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/regen"}))
+    # Une sonde déjà envoyée, jamais revenue, plus vieille que le timeout.
+    client._dom_probe_pending = True
+    client._dom_probe_sent_at = (
+        time.monotonic() - (main.DOM_PROBE_TIMEOUT + 1))
+
+    client._recover_patient_page()
+
+    assert window.loaded_urls == [
+        "http://127.0.0.1:5000/patient/kiosk_login/regen"]
+    assert client.connected is True
+    assert client._dom_probe_pending is False
+
+
+def test_page_watchdog_starts_dom_probe_on_live_url():
+    """Page valide affichée : le watchdog arme une sonde DOM (thread jetable)
+    sans toucher au réseau."""
+    client = _bare_client()
+    client.operational = True
+    client.connected = True
+    client._window_ready.set()
+    window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client.window = window
+    client.session = _FakeSession()
+
+    client._recover_patient_page()
+
+    assert client.session.calls == []
+    # La sonde finit (evaluate_js de la doublure rend la main) : pending
+    # repasse à False rapidement — on ne l'exige pas ici, seulement
+    # l'absence d'effet sur la navigation.
+    assert window.loaded_urls == []

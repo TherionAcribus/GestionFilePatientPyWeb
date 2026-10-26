@@ -42,6 +42,13 @@ INIT_BACKOFF_JITTER_RATIO = 0.2 # décale les bornes de 0 à 20 %
 # affichée après une coupure réseau. Ce délai borne les récupérations.
 PATIENT_PAGE_RECOVERY_INTERVAL = 30
 
+# Sonde DOM de la page patient : une WebView peut garder /patient affichée
+# alors que le moteur est figé (plus de JS, plus de socket) — l'URL seule
+# ne le voit pas. ``evaluate_js`` sur un moteur mort ne rend JAMAIS la
+# main : la sonde part donc dans un thread jetable et, passé ce délai sans
+# retour, la page est rechargée de force.
+DOM_PROBE_TIMEOUT = 90
+
 
 def _jittered_init_delay(delay):
     """Désynchronise les reconnexions sans dépasser le délai nominal.
@@ -154,6 +161,11 @@ class WebViewClient:
         # d'une page d'erreur ? Évite de le réinjecter à chaque passage du
         # watchdog.
         self._offline_screen_shown = False
+        self._dom_probe_pending = False
+        self._dom_probe_sent_at = None
+        # evaluate_js « bloquant » conservé avant le reroutage CSP : run_js
+        # (fire-and-forget) ne prouve pas que le moteur répond.
+        self._evaluate_js_blocking = None
         self._init_stop = threading.Event()
         self._init_thread = None
         # URL de connexion signée (ticket borne) obtenue auprès du serveur ;
@@ -284,6 +296,9 @@ class WebViewClient:
         """
         run_js = getattr(self.window, 'run_js', None)
         if callable(run_js):
+            # Conservé pour la sonde DOM du watchdog : run_js ne renvoie
+            # rien et ne prouve pas que le moteur répond.
+            self._evaluate_js_blocking = self.window.evaluate_js
             self.window.evaluate_js = run_js
 
     def _run_page_script(self, script):
@@ -576,6 +591,57 @@ class WebViewClient:
             # reste affichée — le watchdog réessaiera au prochain passage.
             logger.exception("Écran hors ligne non affichable.")
 
+    def _check_dom_probe(self):
+        """Sonde asynchrone du DOM (page figée sur URL valide).
+
+        Déclenchée quand l'URL courante est bien dans ``base_url`` : le
+        garde-URL ne distingue pas une page vivante d'une page morte. La
+        sonde n'attend pas de valeur — seul le RETOUR de l'appel prouve
+        que le moteur répond. Une sonde sans retour au-delà de
+        ``DOM_PROBE_TIMEOUT`` force la récupération complète."""
+        now = time.monotonic()
+        if getattr(self, '_dom_probe_pending', False):
+            if (self._dom_probe_sent_at is not None
+                    and now - self._dom_probe_sent_at > DOM_PROBE_TIMEOUT):
+                logger.warning("Page patient muette (DOM sans réponse), "
+                               "récupération forcée.")
+                self._dom_probe_pending = False
+                self._force_patient_reload()
+            return
+        evaluate = (getattr(self, '_evaluate_js_blocking', None)
+                    or getattr(self.window, 'evaluate_js', None))
+        if not callable(evaluate) or not self.window:
+            return
+        self._dom_probe_pending = True
+        self._dom_probe_sent_at = now
+
+        def _probe():
+            try:
+                evaluate("void 0")
+            except Exception:
+                logger.exception("Sonde DOM de la page patient impossible.")
+            # Une sonde qui revient (même en erreur) prouve que le moteur
+            # répond ; seule l'absence de retour déclenche le timeout.
+            self._dom_probe_pending = False
+
+        threading.Thread(target=_probe, daemon=True).start()
+
+    def _force_patient_reload(self):
+        """Recharge /patient quand la page est figée : nouveau ticket (le
+        précédent a pu expirer) puis navigation — même fin que le
+        rattrapage d'URL, avec l'écran hors ligne si le serveur refuse."""
+        try:
+            self._patient_login_url = self._fetch_patient_login_url()
+        except SessionUnavailableError as e:
+            self.connected = False
+            logger.warning("Session borne non récupérable : %s", e)
+            self._show_offline_screen()
+            return
+        self.connected = True
+        with self._operational_lock:
+            self._patient_page_shown = False
+        self._maybe_show_patient_page()
+
     def _recover_patient_page(self):
         """Recharge /patient quand la fenêtre n'affiche plus le serveur.
 
@@ -591,6 +657,9 @@ class WebViewClient:
             logger.exception("Lecture de l'URL WebView impossible.")
             current_url = None
         if current_url and url_is_within_base(current_url, self.base_url):
+            # URL valide ≠ page vivante : un moteur figé garde l'URL sans
+            # répondre — la sonde DOM le détecte et force la récupération.
+            self._check_dom_probe()
             return
 
         # La page servie a disparu (chrome-error, about:blank…) : on affiche

@@ -446,6 +446,9 @@ class ConfigEditor(tk.Tk):
             messagebox.showerror("Code PIN de maintenance", pin_error)
             return
         settings.maintenance_pin_hash = pin_hash
+        # Configuration valide enregistrée par une personne : la borne est
+        # configurée, l'assistant de premier lancement n'a plus à s'ouvrir.
+        settings.setup_completed = True
 
         errors = settings.validate()
         if errors:
@@ -579,89 +582,7 @@ class ConfigEditor(tk.Tk):
                        lambda report: self._probe_server(base_url, app_secret, report))
 
     def _probe_server(self, base_url, app_secret, report=None):
-        # report(msg) journalise la progression dans la fenêtre ; None pour les
-        # appels hors UI (tests unitaires).
-        def emit(message):
-            if report:
-                report(message)
-
-        # Import local : l'éditeur doit rester ouvrable même sans `requests`
-        # installé (le test de serveur est alors le seul indisponible).
-        import requests
-        from requests.exceptions import RequestException
-        emit(f"Étape 1/3 : jeton applicatif auprès de {base_url}…")
-        try:
-            response = requests.post(
-                f"{base_url}/api/get_app_token",
-                data={'app_secret': app_secret},
-                timeout=_TEST_TIMEOUT,
-            )
-        except RequestException as e:
-            return False, f"Serveur injoignable :\n{e}"
-
-        if response.status_code in (401, 403):
-            return False, (f"Serveur joignable mais secret d'application refusé "
-                           f"(HTTP {response.status_code}).")
-        if response.status_code != 200:
-            return False, (f"Serveur joignable mais réponse inattendue "
-                           f"(HTTP {response.status_code}).")
-
-        try:
-            token = response.json().get('token')
-        except ValueError:
-            token = None
-        if not token:
-            return False, "Serveur joignable mais réponse inattendue (aucun token)."
-        emit("Jeton applicatif obtenu.")
-
-        # Étape 2 : échange du jeton contre un ticket de session borne — c'est
-        # le nouveau chemin de connexion (plus de compte utilisateur).
-        emit("Étape 2/3 : échange du jeton contre un ticket de session…")
-        try:
-            ticket_resp = requests.post(
-                f"{base_url}/api/kiosk/session_ticket",
-                headers={"X-App-Token": token},
-                timeout=_TEST_TIMEOUT,
-            )
-        except RequestException as e:
-            return False, (f"Secret valide mais ticket de session injoignable :"
-                           f"\n{e}")
-        if ticket_resp.status_code != 200:
-            return False, (f"Secret valide mais ticket de session refusé "
-                           f"(HTTP {ticket_resp.status_code}).")
-        try:
-            login_url = ticket_resp.json().get('login_url')
-        except ValueError:
-            login_url = None
-        if not login_url:
-            return False, ("Ticket de session : réponse inattendue "
-                           "(aucune URL de connexion).")
-        emit("Ticket de session obtenu.")
-        try:
-            login_target = resolve_server_url(base_url, login_url)
-        except ValueError:
-            return False, ("Ticket obtenu mais le serveur a renvoyé une URL de "
-                           "connexion hors du domaine applicatif autorisé.")
-
-        # Étape 3 : la route de connexion doit rediriger vers /patient (cookie
-        # de session posé). Une seule tentative, sans suivre la redirection.
-        emit("Étape 3/3 : vérification de la redirection vers /patient…")
-        try:
-            login_resp = requests.get(
-                login_target, timeout=_TEST_TIMEOUT,
-                allow_redirects=False)
-        except RequestException:
-            # Ne pas reprendre le texte de l'exception : requests peut y inclure
-            # l'URL signée, donc le ticket de session.
-            return False, ("Ticket obtenu mais connexion borne injoignable "
-                           "(vérifiez le réseau et le serveur).")
-        location = login_resp.headers.get('Location', '')
-        if login_resp.status_code in (301, 302, 303, 307, 308) and \
-                location.rstrip('/').endswith('/patient'):
-            return True, (f"Serveur joignable ({base_url}), secret valide et "
-                          "connexion borne fonctionnelle (ticket -> /patient).")
-        return False, (f"Ticket obtenu mais la connexion borne ne redirige pas "
-                       f"vers /patient (HTTP {login_resp.status_code}).")
+        return probe_server(base_url, app_secret, report)
 
     def test_printer(self):
         """Teste l'ouverture de l'imprimante USB avec les identifiants/modèle
@@ -688,38 +609,135 @@ class ConfigEditor(tk.Tk):
                                                         report))
 
     def _probe_printer(self, id_vendor, id_product, model, report=None):
-        def emit(message):
-            if report:
-                report(message)
+        return probe_printer(id_vendor, id_product, model, report)
 
-        try:
-            from printer import USB_IO_TIMEOUT_MS, CustomUsb
-        except ImportError as e:
-            return False, ("Module d'impression (python-escpos) indisponible dans "
-                           f"cet éditeur :\n{e}")
-        emit(f"Ouverture du périphérique USB {id_vendor}/{id_product} "
-             f"(profil {model})…")
-        printer = None
-        try:
-            printer = CustomUsb(
-                int(id_vendor, 16), int(id_product, 16), profile=model,
-                timeout=USB_IO_TIMEOUT_MS)
-            # Créer l'objet ne suffit pas : open() localise puis configure le
-            # périphérique. La surcharge CustomUsb rend l'échec fatal au lieu
-            # de le limiter à un log.
-            printer.open()
-        except Exception as e:
-            if printer is not None:
-                with contextlib.suppress(Exception):
-                    printer.close()
-            # FRONTIÈRE MATÉRIELLE : la pile USB remonte des types très variés.
-            return False, (f"Imprimante non disponible :\n{e}\n\n"
-                           "Vérifiez qu'elle est branchée, sous tension, et que "
-                           "l'application principale ne l'utilise pas déjà.")
-        emit("Périphérique ouvert — fermeture.")
-        with contextlib.suppress(Exception):
-            printer.close()
-        return True, f"Imprimante détectée et ouverte avec succès (modèle {model})."
+
+def probe_server(base_url, app_secret, report=None):
+    """Teste le serveur saisi : jeton, ticket de session, redirection vers
+    /patient. Renvoie ``(ok, message)`` ; ``report(msg)`` suit la progression.
+    Partagé avec l'assistant de premier lancement."""
+
+    # report(msg) journalise la progression dans la fenêtre ; None pour les
+    # appels hors UI (tests unitaires).
+    def emit(message):
+        if report:
+            report(message)
+
+    # Import local : l'éditeur doit rester ouvrable même sans `requests`
+    # installé (le test de serveur est alors le seul indisponible).
+    import requests
+    from requests.exceptions import RequestException
+    emit(f"Étape 1/3 : jeton applicatif auprès de {base_url}…")
+    try:
+        response = requests.post(
+            f"{base_url}/api/get_app_token",
+            data={'app_secret': app_secret},
+            timeout=_TEST_TIMEOUT,
+        )
+    except RequestException as e:
+        return False, f"Serveur injoignable :\n{e}"
+
+    if response.status_code in (401, 403):
+        return False, (f"Serveur joignable mais secret d'application refusé "
+                       f"(HTTP {response.status_code}).")
+    if response.status_code != 200:
+        return False, (f"Serveur joignable mais réponse inattendue "
+                       f"(HTTP {response.status_code}).")
+
+    try:
+        token = response.json().get('token')
+    except ValueError:
+        token = None
+    if not token:
+        return False, "Serveur joignable mais réponse inattendue (aucun token)."
+    emit("Jeton applicatif obtenu.")
+
+    # Étape 2 : échange du jeton contre un ticket de session borne — c'est
+    # le nouveau chemin de connexion (plus de compte utilisateur).
+    emit("Étape 2/3 : échange du jeton contre un ticket de session…")
+    try:
+        ticket_resp = requests.post(
+            f"{base_url}/api/kiosk/session_ticket",
+            headers={"X-App-Token": token},
+            timeout=_TEST_TIMEOUT,
+        )
+    except RequestException as e:
+        return False, (f"Secret valide mais ticket de session injoignable :"
+                       f"\n{e}")
+    if ticket_resp.status_code != 200:
+        return False, (f"Secret valide mais ticket de session refusé "
+                       f"(HTTP {ticket_resp.status_code}).")
+    try:
+        login_url = ticket_resp.json().get('login_url')
+    except ValueError:
+        login_url = None
+    if not login_url:
+        return False, ("Ticket de session : réponse inattendue "
+                       "(aucune URL de connexion).")
+    emit("Ticket de session obtenu.")
+    try:
+        login_target = resolve_server_url(base_url, login_url)
+    except ValueError:
+        return False, ("Ticket obtenu mais le serveur a renvoyé une URL de "
+                       "connexion hors du domaine applicatif autorisé.")
+
+    # Étape 3 : la route de connexion doit rediriger vers /patient (cookie
+    # de session posé). Une seule tentative, sans suivre la redirection.
+    emit("Étape 3/3 : vérification de la redirection vers /patient…")
+    try:
+        login_resp = requests.get(
+            login_target, timeout=_TEST_TIMEOUT,
+            allow_redirects=False)
+    except RequestException:
+        # Ne pas reprendre le texte de l'exception : requests peut y inclure
+        # l'URL signée, donc le ticket de session.
+        return False, ("Ticket obtenu mais connexion borne injoignable "
+                       "(vérifiez le réseau et le serveur).")
+    location = login_resp.headers.get('Location', '')
+    if login_resp.status_code in (301, 302, 303, 307, 308) and \
+            location.rstrip('/').endswith('/patient'):
+        return True, (f"Serveur joignable ({base_url}), secret valide et "
+                      "connexion borne fonctionnelle (ticket -> /patient).")
+    return False, (f"Ticket obtenu mais la connexion borne ne redirige pas "
+                   f"vers /patient (HTTP {login_resp.status_code}).")
+
+
+def probe_printer(id_vendor, id_product, model, report=None):
+    """Ouvre puis referme l'imprimante USB (sans imprimer). Renvoie
+    ``(ok, message)``. Partagé avec l'assistant de premier lancement."""
+
+    def emit(message):
+        if report:
+            report(message)
+
+    try:
+        from printer import USB_IO_TIMEOUT_MS, CustomUsb
+    except ImportError as e:
+        return False, ("Module d'impression (python-escpos) indisponible dans "
+                       f"cet éditeur :\n{e}")
+    emit(f"Ouverture du périphérique USB {id_vendor}/{id_product} "
+         f"(profil {model})…")
+    printer = None
+    try:
+        printer = CustomUsb(
+            int(id_vendor, 16), int(id_product, 16), profile=model,
+            timeout=USB_IO_TIMEOUT_MS)
+        # Créer l'objet ne suffit pas : open() localise puis configure le
+        # périphérique. La surcharge CustomUsb rend l'échec fatal au lieu
+        # de le limiter à un log.
+        printer.open()
+    except Exception as e:
+        if printer is not None:
+            with contextlib.suppress(Exception):
+                printer.close()
+        # FRONTIÈRE MATÉRIELLE : la pile USB remonte des types très variés.
+        return False, (f"Imprimante non disponible :\n{e}\n\n"
+                       "Vérifiez qu'elle est branchée, sous tension, et que "
+                       "l'application principale ne l'utilise pas déjà.")
+    emit("Périphérique ouvert — fermeture.")
+    with contextlib.suppress(Exception):
+        printer.close()
+    return True, f"Imprimante détectée et ouverte avec succès (modèle {model})."
 
 
 def _cancel_pending_callbacks(window):

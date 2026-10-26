@@ -211,6 +211,10 @@ class Settings:
     # Empreinte du code PIN demandé par la touche de maintenance (F10).
     # Vide = aucun PIN. Jamais le PIN en clair (cf. maintenance_pin).
     maintenance_pin_hash: str = ""
+    # Vrai une fois l'assistant de premier lancement terminé (ou une
+    # configuration valide enregistrée dans l'éditeur). Faux : l'assistant
+    # s'ouvre au démarrage (cf. main.py, setup_wizard.py).
+    setup_completed: bool = False
 
     @property
     def url(self) -> str:
@@ -241,6 +245,12 @@ class Settings:
                 "Secret d'application vide ou repris de l'exemple de "
                 "configuration.")
         return reasons
+
+    def looks_configured(self) -> bool:
+        """Vrai si la configuration est complète et acceptable : valide et
+        sans secret trivial. Sert à reconnaître une borne déjà en service
+        dont le fichier précède l'assistant de premier lancement."""
+        return not self.validate() and not self.insecure_credentials_reasons()
 
     def has_insecure_default_credentials(self) -> bool:
         """Vrai si le secret d'application est trivial (vide ou repris de
@@ -334,7 +344,8 @@ class Settings:
         errors = []
 
         # Types : une valeur JSON du mauvais type ne doit pas passer en douce.
-        for name in ("fullscreen", "debug", "hide_cursor", "check_paper"):
+        for name in ("fullscreen", "debug", "hide_cursor", "check_paper",
+                     "setup_completed"):
             if not isinstance(getattr(self, name), bool):
                 errors.append(f"Le champ « {name} » doit être un booléen (vrai/faux).")
         for name in (
@@ -522,7 +533,18 @@ class Config:
             # Le secret (app_secret) provient désormais du magasin sécurisé du
             # système ; on migre au besoin une valeur héritée en clair puis on
             # réécrit le fichier sans elle.
-            if self._apply_secret_store(data):
+            needs_rewrite = self._apply_secret_store(data)
+            # Fichier antérieur à l'assistant de premier lancement : une
+            # borne déjà correctement configurée ne doit PAS le voir s'ouvrir
+            # après une mise à jour. Les autres (fichier pré-rempli par
+            # install.sh, secret manquant...) passeront par l'assistant.
+            if "setup_completed" not in data:
+                self.settings.setup_completed = self.settings.looks_configured()
+                logger.info("Marqueur de premier lancement absent : borne "
+                            "considérée comme %s.",
+                            "configurée" if self.settings.setup_completed
+                            else "à configurer")
+            if needs_rewrite:
                 try:
                     self.save_settings()
                 except Exception:
@@ -609,13 +631,20 @@ class Config:
         if new_settings is not None:
             self.settings = new_settings
         try:
-            self._write_settings_file()
+            stored_securely = self._write_settings_file()
         except Exception:
             # Écriture atomique échouée : le fichier n'a pas été remplacé. On
             # restaure l'objet en mémoire précédent pour ne pas laisser la borne
             # avec une configuration qui n'est pas celle réellement persistée.
             self.settings = previous
             raise
+        # Le fichier vient d'être réécrit en entier : une erreur de lecture
+        # antérieure (fichier illisible) n'a plus lieu d'être. Sans cela, une
+        # borne réparée dans l'éditeur refusait encore de démarrer dans le
+        # même processus. Idem pour un secret en clair désormais migré.
+        self.load_error = None
+        if stored_securely:
+            self.secret_store_error = None
 
     def _write_settings_file(self):
         """Écrit ``self.settings`` dans ``settings.json`` de manière atomique.
@@ -626,13 +655,16 @@ class Config:
         écrire d'éventuels secrets, ``flush`` + ``fsync`` pour forcer l'écriture
         physique, copie ``.bak`` de l'ancienne version, puis remplacement atomique.
         Un lecteur ne voit jamais un fichier à moitié écrit : soit l'ancien
-        contenu complet, soit le nouveau."""
+        contenu complet, soit le nouveau.
+
+        Renvoie True si les secrets sont dans le magasin sécurisé."""
         config_file = self.config_path / "settings.json"
 
         data = asdict(self.settings)
 
         secret_values = {k: data.get(k, "") for k in secret_store.SECRET_FIELDS}
-        if secret_store.store_secrets(secret_values):
+        stored_securely = secret_store.store_secrets(secret_values)
+        if stored_securely:
             # Stockés de façon sécurisée : ne rien laisser en clair dans le JSON.
             for k in secret_store.SECRET_FIELDS:
                 data[k] = ""
@@ -695,3 +727,4 @@ class Config:
         except OSError as e:
             logger.warning("Impossible de restreindre les permissions de %s: %s",
                            config_file, e)
+        return stored_securely

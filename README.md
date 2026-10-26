@@ -41,8 +41,8 @@ Le script est **idempotent** et couvre toute l'installation : paquets système,
 environnement Python, **détection de l'imprimante USB + règle udev**,
 démarrage automatique à l'ouverture de session, pré-remplissage de
 `settings.json` et raccourci « Configuration » sur le bureau. Il demande le
-mot de passe sudo une fois, puis ouvre l'éditeur de configuration où il ne
-reste que **`base_url`** et **`app_secret`** à saisir.
+mot de passe sudo une fois, puis ouvre l'**assistant d'installation** (voir § 4.1) où il
+ne reste guère que l'adresse du serveur et le secret d'application à saisir.
 
 Relancez-le simplement pour mettre à jour une borne (`git pull` + dépendances).
 
@@ -128,7 +128,29 @@ utilisateur (jamais committé) :
 
 Un modèle est fourni : [`settings.example.json`](settings.example.json).
 
-### 4.1 Éditeur graphique (recommandé)
+### 4.1 Assistant de premier lancement
+
+Tant que la borne n'a jamais été configurée, un **assistant en 4 étapes**
+s'ouvre au démarrage, avant l'interface kiosque :
+
+1. **Serveur** : adresse et secret d'application, bouton « Tester la connexion » ;
+2. **Imprimante** : détection des imprimantes USB branchées (identifiants
+   pré-remplis), modèle, bouton « Tester l'imprimante » ;
+3. **Borne** : identifiant, options kiosque (plein écran, curseur masqué,
+   mode production proposés par défaut), code PIN de maintenance facultatif ;
+4. **Récapitulatif** : réglages, résultats des tests et points bloquants, puis
+   « Terminer et démarrer la borne ».
+
+« Configuration avancée… » bascule vers l'éditeur complet. Un assistant
+abandonné se rouvre au démarrage suivant ; la borne démarre quand même si la
+configuration existante est valide. Pour le relancer à la demande :
+`./FlowelisBorne --setup` ou `python setup_wizard.py`.
+
+Une borne déjà en service avant l'arrivée de l'assistant n'est pas concernée :
+si sa configuration est valide, elle est considérée comme configurée
+(champ `setup_completed`).
+
+### 4.2 Éditeur graphique
 
 ```bash
 # Depuis le dépôt :
@@ -142,7 +164,7 @@ Le binaire ouvre aussi **automatiquement** cet éditeur au premier démarrage
 ou quand la configuration est refusée (fichier absent, illisible ou
 invalide) — aucune connaissance du chemin n'est nécessaire.
 
-### 4.2 Touche de maintenance (F10)
+### 4.3 Touche de maintenance (F10)
 
 Sur une borne **en service**, la touche **F10** d'un clavier branché ouvre la
 configuration sans terminal ni redémarrage manuel (F11 reste la bascule
@@ -174,12 +196,12 @@ diagnostics :
   en une seule tentative bornée.
 - **Tester l'imprimante** : ouverture du périphérique USB (sans imprimer).
 
-### 4.3 Champs
+### 4.4 Champs
 
 | Champ | Type | Description |
 |-------|------|-------------|
 | `base_url` | str | URL racine du serveur. **HTTP autorisé uniquement pour `localhost` ou en mode `debug`** ; un serveur distant doit être en **HTTPS**. |
-| `app_secret` | str | Secret d'application — **identité machine** de la borne (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.4). Sert à obtenir le jeton applicatif, lui-même échangé contre un ticket de session signé (`/patient/kiosk_login/…`) — la borne n'a plus de compte utilisateur. |
+| `app_secret` | str | Secret d'application — **identité machine** de la borne (non vide ; **vide par défaut** et **refusé si valeur d'exemple**). **Secret** : stocké dans le magasin du système (cf. § 4.5). Sert à obtenir le jeton applicatif, lui-même échangé contre un ticket de session signé (`/patient/kiosk_login/…`) — la borne n'a plus de compte utilisateur. |
 | `printer_id_vendor` | str | ID vendeur USB, hexadécimal (ex. `0x04b8`). |
 | `printer_id_product` | str | ID produit USB, hexadécimal (ex. `0x0202`). |
 | `printer_model` | str | Profil python-escpos (ex. `TM-T88II`). |
@@ -189,6 +211,7 @@ diagnostics :
 | `hide_cursor` | bool | Masquer le curseur (borne tactile). `false` pour un poste de maintenance souris. |
 | `borne_id` | str | Identifiant de la borne joint aux statuts (vide = nom d'hôte). |
 | `maintenance_pin_hash` | str | Empreinte du code PIN de la touche de maintenance (vide = pas de PIN). Se règle dans l'éditeur, jamais à la main. |
+| `setup_completed` | bool | Borne configurée (assistant terminé ou configuration enregistrée dans l'éditeur). `false` : l'assistant s'ouvre au démarrage. |
 
 > **Garde-fous** : la borne **refuse de démarrer** si la configuration est
 > invalide (URL/secret/identifiants USB/types) ou si le secret d'application
@@ -201,7 +224,7 @@ diagnostics :
 > restent refusées en production par une denylist, qui couvre les
 > installations existantes.
 
-### 4.4 Stockage du secret (`app_secret`)
+### 4.5 Stockage du secret (`app_secret`)
 
 Cette valeur n'est **jamais** écrite en clair dans `settings.json` : elle est
 conservée dans le **gestionnaire de secrets du système** via `keyring`
@@ -359,5 +382,7 @@ La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
 | `logging_config.py` | Journalisation (niveaux, rotation, masquage des secrets). |
 | `editor_logic.py` | Logique pure de l'éditeur (testable sans tkinter). |
 | `maintenance_pin.py` | Touche de maintenance et code PIN (empreinte, vérification). |
+| `setup_wizard.py` | Assistant de premier lancement (interface). |
+| `setup_logic.py` | Logique pure de l'assistant (étapes, configuration finale, détection USB). |
 | `startup_diagnosis.py` | Cause probable d'un démarrage qui échoue, affichée au technicien. |
 | `secret_store.py` | Stockage des secrets dans le magasin du système (keyring). |

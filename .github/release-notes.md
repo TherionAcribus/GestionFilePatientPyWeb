@@ -6,8 +6,11 @@ chmod +x FlowelisBorne-*-linux-x86_64
 ./FlowelisBorne-*-linux-x86_64
 ```
 
-- `./FlowelisBorne --config` : éditeur graphique de configuration (ouvert
-  automatiquement au premier démarrage ou si la configuration est refusée).
+- Premier démarrage : un assistant d'installation en 4 étapes s'ouvre
+  (serveur, imprimante avec détection USB, borne, récapitulatif) ;
+  `./FlowelisBorne --setup` le relance.
+- `./FlowelisBorne --config` : éditeur graphique complet (ouvert aussi
+  automatiquement si la configuration est refusée).
 - `./FlowelisBorne --selfcheck` : diagnostic du binaire (imports, ressources).
 - Touche **F10** sur la borne en service (clavier branché) : ouvre la
   configuration (code PIN facultatif), puis la borne redémarre d'elle-même.

@@ -1101,6 +1101,34 @@ def _launch_config_editor(**editor_options):
     return True
 
 
+def _launch_setup_wizard(**wizard_options):
+    """Ouvre l'assistant de premier lancement (bloquant jusqu'à fermeture).
+
+    Renvoie ``done``, ``advanced`` (l'utilisateur veut l'éditeur complet)
+    ou ``cancelled`` ; None si l'assistant n'a pas pu s'afficher (Tk absent
+    ou en panne) — la borne retombe alors sur l'éditeur ou son écran
+    d'erreur, comme avant l'assistant."""
+    try:
+        import setup_wizard
+    except ImportError:
+        logger.exception("Assistant d'installation indisponible (tkinter ?).")
+        return None
+    try:
+        return setup_wizard.run_setup_wizard(**wizard_options)
+    except Exception:
+        # FRONTIÈRE : une fenêtre Tk qui plante ne doit pas emporter la borne.
+        logger.exception("L'assistant d'installation a planté.")
+        return None
+
+
+def _run_setup(kiosk_follows):
+    """Assistant, puis éditeur complet si l'utilisateur l'a demandé."""
+    outcome = _launch_setup_wizard(kiosk_follows=kiosk_follows)
+    if outcome == "advanced":
+        _launch_config_editor(kiosk_follows=kiosk_follows)
+    return outcome
+
+
 def _maintenance_pin_granted(stored_hash):
     """Demande le code PIN de maintenance s'il y en a un.
 
@@ -1136,11 +1164,13 @@ def _restart_command(argv=None, executable=None, frozen=None):
 
     Binaire PyInstaller : le binaire lui-même. Depuis les sources : le même
     interpréteur sur ce fichier. Les options de lancement sont conservées,
-    sauf ``--config`` / ``--selfcheck`` qui ne mènent pas à la borne."""
+    sauf ``--config`` / ``--setup`` / ``--selfcheck`` qui ne mènent pas à la
+    borne."""
     argv = sys.argv if argv is None else argv
     executable = sys.executable if executable is None else executable
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
-    options = [a for a in argv[1:] if a not in ("--config", "--selfcheck")]
+    options = [a for a in argv[1:]
+               if a not in ("--config", "--setup", "--selfcheck")]
     if frozen:
         return [executable, *options]
     return [executable, os.path.abspath(__file__), *options]
@@ -1174,6 +1204,36 @@ def _restart_kiosk():
     sys.exit(0)
 
 
+def _prepare_client():
+    """Assistant de premier lancement / éditeur si nécessaire, puis borne.
+
+    Ordre : l'assistant (borne jamais configurée) passe AVANT la création de
+    la borne, qui lance déjà la connexion au serveur ; l'éditeur ne s'ouvre
+    ensuite que si la configuration reste refusée."""
+    # Premier lancement : l'assistant s'ouvre AVANT de créer la borne (dont
+    # la création lance déjà la connexion au serveur). Abandonné, il se
+    # rouvrira au prochain démarrage ; la borne démarre quand même si la
+    # configuration existante est valide.
+    setup_shown = False
+    if not Config().settings.setup_completed:
+        logger.info("Borne jamais configurée : ouverture de l'assistant.")
+        setup_shown = _run_setup(kiosk_follows=True) is not None
+
+    client = WebViewClient()
+
+    # Première utilisation ou configuration refusée : l'éditeur graphique
+    # s'ouvre automatiquement AVANT l'interface kiosque — la borne peut ainsi
+    # être configurée sans connaître l'emplacement du fichier. En cas
+    # d'abandon, l'écran d'erreur local reste affiché comme auparavant.
+    # (Sauf si l'assistant vient d'être fermé : on n'enchaîne pas une
+    # seconde fenêtre ; l'écran d'erreur rappelle la touche F10.)
+    if client._config_error and not setup_shown:
+        logger.info("Configuration invalide : ouverture de l'éditeur.")
+        if _launch_config_editor(kiosk_follows=True):
+            client = WebViewClient()   # Config singleton relue après édition
+    return client
+
+
 def _selfcheck():
     """Vérifie que le binaire embarque tout le nécessaire, SANS affichage ni
     matériel (``--selfcheck``, utilisé par le workflow de release).
@@ -1189,7 +1249,7 @@ def _selfcheck():
     for module in ('webview.platforms.qt', 'PySide6.QtWebEngineWidgets',
                    'escpos.printer', 'usb.core',
                    'keyring.backends.SecretService', 'keyring.backends.chainer',
-                   'tkinter', 'config_editor'):
+                   'tkinter', 'config_editor', 'setup_wizard'):
         try:
             importlib.import_module(module)
         except Exception as exc:  # tout rapporter : c'est un diagnostic
@@ -1222,17 +1282,13 @@ if __name__ == '__main__':
         logger.info("Ouverture de l'éditeur de configuration (--config).")
         sys.exit(0 if _launch_config_editor() else 1)
 
-    logger.info("Démarrage de la borne Flowelis.")
-    client = WebViewClient()
+    if '--setup' in sys.argv:
+        logger.info("Ouverture de l'assistant d'installation (--setup).")
+        sys.exit(0 if _run_setup(kiosk_follows=False) is not None else 1)
 
-    # Première utilisation ou configuration refusée : l'éditeur graphique
-    # s'ouvre automatiquement AVANT l'interface kiosque — la borne peut ainsi
-    # être configurée sans connaître l'emplacement du fichier. En cas
-    # d'abandon, l'écran d'erreur local reste affiché comme auparavant.
-    if client._config_error:
-        logger.info("Configuration invalide : ouverture de l'éditeur.")
-        if _launch_config_editor(kiosk_follows=True):
-            client = WebViewClient()   # Config singleton relue après édition
+    logger.info("Démarrage de la borne Flowelis.")
+
+    client = _prepare_client()
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()
 

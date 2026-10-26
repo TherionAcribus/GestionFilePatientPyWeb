@@ -2,14 +2,16 @@
 #
 # install.sh — Installation complète de la borne Flowelis (Linux).
 #
-#   bash install.sh               Installe tout puis ouvre l'éditeur de config.
-#   bash install.sh --no-editor   Idem, sans ouvrir l'éditeur.
+#   bash install.sh               Installe tout puis ouvre l'assistant
+#                                 d'installation de la borne.
+#   bash install.sh --no-editor   Idem, sans ouvrir l'assistant (il s'ouvrira
+#                                 au premier lancement de la borne).
 #
 # Automatise : paquets système (apt), environnement Python, détection de
 # l'imprimante USB + règle udev, démarrage automatique, pré-remplissage de
 # settings.json et raccourci « Configuration » sur le bureau.
 #
-# Il restera à saisir dans l'éditeur uniquement :
+# Il restera à saisir dans l'assistant uniquement :
 #   - l'URL du serveur (base_url)
 #   - le secret d'application (fourni par l'administrateur Flowelis)
 #
@@ -264,18 +266,18 @@ echo
 ok "Installation terminée."
 cat <<EOF
 
-  Il reste 2 champs à renseigner dans l'éditeur de configuration :
-    • URL du serveur (base_url)
-    • Secret d'application (app_secret) — fourni par l'administrateur Flowelis
-
-  Puis cliquez « Tester le serveur » et « Tester l'imprimante ».
+  L'assistant d'installation de la borne demande essentiellement :
+    • l'adresse du serveur Flowelis ;
+    • le secret d'application — fourni par l'administrateur Flowelis.
+  Il propose aussi de tester le serveur et l'imprimante. S'il n'est pas
+  terminé maintenant, il se rouvrira au premier lancement de la borne.
 EOF
 
 if [ "$OPEN_EDITOR" -eq 1 ]; then
     if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-        info "Ouverture de l'éditeur de configuration…"
-        "$PYBIN" "$ROOT/config_editor.py" || true
+        info "Ouverture de l'assistant d'installation…"
+        "$PYBIN" "$ROOT/setup_wizard.py" || true
     else
-        warn "Pas de session graphique détectée : lancez « $VENV/bin/python config_editor.py » depuis le bureau."
+        warn "Pas de session graphique détectée : l'assistant s'ouvrira au premier lancement de la borne (ou : « $VENV/bin/python setup_wizard.py »)."
     fi
 fi

@@ -77,6 +77,29 @@ class CustomUsb(Usb):
         return status
 
 
+def udev_fix_instructions(id_vendor, id_product):
+    """Mode d'emploi affiché quand l'USB est refusé faute de droits (langid).
+
+    Même règle que ``install.sh`` et le README : identifiants hexadécimaux
+    SANS « 0x » (udev ne reconnaît pas le préfixe : la règle copiée avec ne
+    s'appliquait jamais), groupe ``plugdev``. ``id_vendor``/``id_product``
+    sont les entiers lus dans la configuration."""
+    rule = (f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{id_vendor:04x}", '
+            f'ATTRS{{idProduct}}=="{id_product:04x}", MODE="0664", '
+            'GROUP="plugdev", TAG+="uaccess"')
+    return ('Erreur de permissions USB. Pour résoudre :\n'
+            '1. Ajoutez une règle udev :\n'
+            f"echo '{rule}' "
+            '| sudo tee /etc/udev/rules.d/99-flowelis-printer.rules\n'
+            '2. Rechargez les règles :\n'
+            'sudo udevadm control --reload-rules && '
+            'sudo udevadm trigger --subsystem-match=usb\n'
+            '3. Ajoutez votre utilisateur au groupe plugdev :\n'
+            'sudo usermod -a -G plugdev "$USER"\n'
+            '4. Fermez puis rouvrez la session, et rebranchez l\'imprimante.\n'
+            '(install.sh fait tout cela automatiquement.)')
+
+
 def _default_device_factory(id_vendor, id_product, printer_model):
     """Fabrique par défaut du périphérique d'impression : le VRAI matériel USB
     (CustomUsb / python-escpos), encore non ouvert. Point de découplage
@@ -572,16 +595,7 @@ class Printer:
             self.initialize_printer()
         except ValueError as e:
             if "langid" in str(e):
-                error_msg = ('Erreur de permissions USB. Pour résoudre :\n'
-                           '1. Ajoutez une règle udev :\n'
-                           f'echo \'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{idVendor}", '
-                           f'ATTRS{{idProduct}}=="{idProduct}", MODE="0666", GROUP="dialout"\' '
-                           '| sudo tee /etc/udev/rules.d/99-printer.rules\n'
-                           '2. Rechargez les règles :\n'
-                           'sudo udevadm control --reload-rules && sudo udevadm trigger\n'
-                           '3. Ajoutez votre utilisateur au groupe dialout :\n'
-                           'sudo usermod -a -G dialout $USER\n'
-                           '4. Déconnectez-vous et reconnectez-vous')
+                error_msg = udev_fix_instructions(self.idVendor, self.idProduct)
                 # TRY400 volontairement désactivé : le message est un MODE
                 # D'EMPLOI de correction (règles udev), pas un rapport
                 # d'anomalie ; la trace de la ValueError « langid »

@@ -762,3 +762,33 @@ def test_print_end_to_end_with_fake_printer(monkeypatch):
     assert result['success'] is True
     assert fake.text_calls == ["Bonjour"]
     assert fake.cut_calls == 1
+
+
+# --- Mode d'emploi udev (permissions USB) ---------------------------------
+
+def test_udev_fix_instructions_sans_prefixe_0x_et_groupe_plugdev():
+    """La règle proposée doit être celle d'install.sh/README : udev ne
+    reconnaît pas « 0x04b8 », la règle copiée ne s'appliquait jamais."""
+    from printer import udev_fix_instructions
+    message = udev_fix_instructions(0x04B8, 0x0202)
+    assert 'ATTRS{idVendor}=="04b8"' in message
+    assert 'ATTRS{idProduct}=="0202"' in message
+    assert "0x" not in message
+    assert 'GROUP="plugdev"' in message
+    assert 'TAG+="uaccess"' in message
+    assert "dialout" not in message
+    assert "99-flowelis-printer.rules" in message
+
+
+def test_udev_fix_instructions_identique_a_install_sh():
+    import os
+
+    from printer import udev_fix_instructions
+    racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(racine, "install.sh"), encoding="utf-8") as fh:
+        script = fh.read()
+    # Même règle (au format près) que celle posée par install.sh.
+    modele = ('SUBSYSTEM=="usb", ATTRS{idVendor}=="%s", ATTRS{idProduct}=="%s", '
+              'MODE="0664", GROUP="plugdev", TAG+="uaccess"')
+    assert modele in script
+    assert modele % ("04b8", "0202") in udev_fix_instructions(0x04B8, 0x0202)

@@ -92,10 +92,12 @@ class PrinterAPI:
     """API minimaliste pour PyWebView"""
     def __init__(self):
         self._print_callback = None
-        # borne_id : même calcul que Printer (settings.borne_id sinon nom
-        # d'hôte). Joint aux résultats de print_ticket pour que la page
-        # kiosque identifie la borne dans l'acquittement des tirages de
-        # test admin (print_test_result -> /socket_admin).
+        # borne_id : settings.borne_id est normalement déjà renseigné
+        # (auto-généré puis persisté par Config, jamais vide) ; le repli sur
+        # le nom d'hôte n'est qu'une double sécurité. Joint aux résultats de
+        # print_ticket pour que la page kiosque identifie la borne dans
+        # l'acquittement des tirages de test admin (print_test_result ->
+        # /socket_admin).
         self._borne_id = Config().settings.borne_id or socket.gethostname()
         # Canal de remontée des incidents borne (report_event) : branché sur
         # le Printer réel par set_event_reporter une fois l'imprimante
@@ -524,8 +526,10 @@ class Printer:
         # close(). initialize_printer() appelle open() : la création de l'objet
         # ne suffit pas à prouver la connexion USB.
         self._device_factory = device_factory or _default_device_factory
-        # Identifiant de la borne joint à chaque statut (repli sur le hostname si
-        # non configuré) pour distinguer les bornes côté serveur.
+        # Identifiant de la borne joint à chaque statut pour distinguer les
+        # bornes côté serveur. settings.borne_id est normalement déjà renseigné
+        # (auto-généré puis persisté par Config) : le repli sur le hostname
+        # n'est qu'une double sécurité.
         self.borne_id = Config().settings.borne_id or socket.gethostname()
         self.p = None
         self.error = None

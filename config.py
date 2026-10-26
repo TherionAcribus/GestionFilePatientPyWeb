@@ -7,8 +7,10 @@ import platform
 import posixpath
 import re
 import shutil
+import socket
 import tempfile
-from dataclasses import asdict, dataclass, fields
+import uuid
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from urllib.parse import unquote, urlparse, urlunparse
 
@@ -187,6 +189,17 @@ def redact_url_for_log(url: str) -> str:
     return "<URL non absolue>"
 
 
+def generate_borne_id() -> str:
+    """Identifiant de borne généré quand l'administrateur n'en saisit pas.
+
+    Le hostname est préféré : lisible par l'équipe et cohérent avec le repli
+    historique (PrinterAPI/Printer l'utilisaient déjà). Une machine sans nom
+    d'hôte reçoit un identifiant aléatoire court — jamais vide : un borne_id
+    vide produit des statuts imprimante rattachés à une borne « sans nom »
+    sur les écrans d'administration."""
+    return socket.gethostname() or f"borne-{uuid.uuid4().hex[:8]}"
+
+
 @dataclass
 class Settings:
     """Structure des paramètres de l'application"""
@@ -205,9 +218,10 @@ class Settings:
     printer_model: str = "TM-T88II"
     app_secret: str = ""
     check_paper: bool = True
-    # Identifiant de la borne joint aux statuts imprimante. Vide => le hostname
-    # de la machine est utilisé par défaut (voir Printer.__init__).
-    borne_id: str = ""
+    # Identifiant de la borne joint aux statuts imprimante. Jamais vide :
+    # généré automatiquement (hostname) à la première utilisation puis PERSISTÉ
+    # — l'identité reste stable même si la machine est renommée plus tard.
+    borne_id: str = field(default_factory=generate_borne_id)
     # Empreinte du code PIN demandé par la touche de maintenance (F10).
     # Vide = aucun PIN. Jamais le PIN en clair (cf. maintenance_pin).
     maintenance_pin_hash: str = ""
@@ -534,6 +548,12 @@ class Config:
             # système ; on migre au besoin une valeur héritée en clair puis on
             # réécrit le fichier sans elle.
             needs_rewrite = self._apply_secret_store(data)
+            # borne_id laissé vide dans le fichier (édition manuelle, ancienne
+            # version) : on en génère un et on réécrit le fichier — persisté,
+            # il reste stable entre redémarrages et visible dans l'éditeur.
+            if not str(self.settings.borne_id or "").strip():
+                self.settings.borne_id = generate_borne_id()
+                needs_rewrite = True
             # Fichier antérieur à l'assistant de premier lancement : une
             # borne déjà correctement configurée ne doit PAS le voir s'ouvrir
             # après une mise à jour. Les autres (fichier pré-rempli par
@@ -630,6 +650,11 @@ class Config:
         previous = self.settings
         if new_settings is not None:
             self.settings = new_settings
+        # Sécurité ultime : tout enregistrement (éditeur, assistant de premier
+        # lancement, appel interne) aboutit à un identifiant non vide —
+        # l'auto-génération prime sur un champ laissé vide.
+        if not str(self.settings.borne_id or "").strip():
+            self.settings.borne_id = generate_borne_id()
         try:
             stored_securely = self._write_settings_file()
         except Exception:

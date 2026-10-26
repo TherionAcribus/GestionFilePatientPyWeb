@@ -117,3 +117,38 @@ def test_written_content_is_valid_and_complete(store):
     assert data["printer_model"] == "TM-T88III"
     # Secret jamais en clair (magasin disponible).
     assert data["app_secret"] == ""
+
+
+def test_borne_id_jamais_vide_par_defaut():
+    """L'identifiant de borne est généré dès l'instanciation des valeurs par
+    défaut (hostname) : un Settings « tout neuf » ne porte jamais un
+    borne_id vide."""
+    assert Settings().borne_id.strip() != ""
+
+
+def test_borne_id_genere_si_vide_a_la_sauvegarde(store):
+    """Un champ laissé vide ne doit jamais aboutir à un borne_id vide
+    persisté : les statuts imprimante seraient rattachés à une borne
+    « sans nom » sur les écrans d'administration."""
+    tmp_path = store["_path"]
+    cfg = Config()
+    cfg.save_settings(_new_settings(borne_id=""))
+    assert cfg.settings.borne_id.strip() != ""
+    assert _read_json(tmp_path)["borne_id"] == cfg.settings.borne_id
+
+
+def test_borne_id_genere_au_chargement(store):
+    """Un settings.json existant avec borne_id explicitement vide (édition
+    manuelle, ancienne version) est régénéré et réécrit — l'identifiant reste
+    alors stable entre redémarrages."""
+    tmp_path = store["_path"]
+    Config()  # écrit le settings.json initial
+    data = _read_json(tmp_path)
+    data["borne_id"] = ""
+    (tmp_path / "settings.json").write_text(
+        json.dumps(data, indent=4), encoding="utf-8")
+    # Nouvelle instance : recharge depuis le fichier modifié.
+    config_mod.Config._instance = None
+    cfg = Config()
+    assert cfg.settings.borne_id.strip() != ""
+    assert _read_json(tmp_path)["borne_id"] == cfg.settings.borne_id

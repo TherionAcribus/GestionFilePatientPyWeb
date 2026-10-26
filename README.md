@@ -211,7 +211,7 @@ diagnostics :
 | `fullscreen` | bool | Démarrer en plein écran (kiosque). |
 | `debug` | bool | Mode développement (autorise HTTP distant, logs DEBUG). `false` = production. |
 | `hide_cursor` | bool | Masquer le curseur (borne tactile). `false` pour un poste de maintenance souris. |
-| `borne_id` | str | Identifiant de la borne joint aux statuts (vide = nom d'hôte). |
+| `borne_id` | str | Identifiant de la borne joint aux statuts (jamais vide : laissé vide, il est généré automatiquement — nom d'hôte — puis persisté dans le fichier). |
 | `maintenance_pin_hash` | str | Empreinte du code PIN de la touche de maintenance (vide = pas de PIN). Se règle dans l'éditeur, jamais à la main. |
 | `setup_completed` | bool | Borne configurée (assistant terminé ou configuration enregistrée dans l'éditeur). `false` : l'assistant s'ouvre au démarrage. |
 

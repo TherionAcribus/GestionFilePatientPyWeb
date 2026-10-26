@@ -218,7 +218,8 @@ class SetupWizard(tk.Tk):
             "Options de la borne. Les valeurs proposées conviennent à une "
             "borne en service."))
         self._entry_row(frame, 1, "Identifiant :", "borne_id",
-                        hint=f"facultatif — vide = nom de la machine "
+                        hint=f"facultatif — laissé vide, l'identifiant de la "
+                             f"machine est généré automatiquement "
                              f"({socket.gethostname()})")
         self._check_row(frame, 3, "Plein écran (mode kiosque)", "fullscreen")
         self._check_row(frame, 4, "Masquer le curseur (écran tactile)",

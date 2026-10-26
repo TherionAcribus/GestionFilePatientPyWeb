@@ -27,9 +27,11 @@ kiosque (pywebview + Qt) et pilote l'**imprimante ticket ESC/POS** (USB).
 Des binaires prêts à l'emploi sont publiés sur la page
 [Releases](https://github.com/TherionAcribus/GestionFilePatientPyWeb/releases) :
 un dossier complet (`.tar.gz`, recommandé) ou un binaire autonome unique.
-Ils dispensent de l'environnement Python mais pas des réglages système
-(paquets Qt/USB, règle udev, démarrage automatique, configuration) — voir
-`COMPILATION.md` §5. Sur Raspberry Pi (ARM), installer via `install.sh`.
+Ils dispensent de l'environnement Python mais pas de certains réglages
+système (paquets Qt/USB, règle udev) — voir `COMPILATION.md` §5. Le
+démarrage automatique et les raccourcis sont créés par le binaire lui-même
+(§ 5.1) et la configuration par l'assistant (§ 4.1). Sur Raspberry Pi (ARM),
+installer via `install.sh`.
 
 ### 2.1 Installation automatique (recommandé, Linux)
 
@@ -278,6 +280,28 @@ suffit, sans toucher à la borne.
 
 ### 5.1 Démarrage automatique — Linux
 
+**Binaire de release : rien à faire.** À chaque lancement, le binaire crée ou
+met à jour lui-même ses raccourcis :
+
+| Raccourci | Fichier |
+|-----------|---------|
+| Démarrage automatique à l'ouverture de session | `~/.config/autostart/flowelis-borne.desktop` |
+| Menu des applications : borne, configuration (`--config`), assistant (`--setup`) | `~/.local/share/applications/flowelis-borne*.desktop` |
+| Bureau : « Configuration Flowelis Borne » | `<Bureau>/flowelis-configuration.desktop` |
+
+- Binaire déplacé ou remplacé par une nouvelle version : les raccourcis
+  suivent automatiquement.
+- Démarrage automatique désactivé dans les réglages de session : il le
+  reste. Raccourci supprimé à la main : il n'est pas recréé.
+- Un fichier qui n'a pas été créé par la borne (écrit à la main, ou par
+  `install.sh`) n'est jamais écrasé.
+- `./FlowelisBorne --install-shortcuts` force la (re)création de tous les
+  raccourcis ; `./FlowelisBorne --remove-shortcuts` retire ceux de la borne.
+
+Depuis les sources, rien n'est créé automatiquement (un lancement depuis
+l'IDE ne doit pas toucher au poste) : `install.sh` s'en charge, ou
+`python main.py --install-shortcuts`. Création manuelle, pour mémoire :
+
 **Option A : session graphique (XDG autostart)** — le plus simple pour un
 kiosque. Créez `~/.config/autostart/flowelis-borne.desktop` :
 
@@ -384,5 +408,6 @@ La CI (GitHub Actions, [`.github/workflows`](.github/workflows)) exécute :
 | `maintenance_pin.py` | Touche de maintenance et code PIN (empreinte, vérification). |
 | `setup_wizard.py` | Assistant de premier lancement (interface). |
 | `setup_logic.py` | Logique pure de l'assistant (étapes, configuration finale, détection USB). |
+| `desktop_integration.py` | Raccourcis système Linux (démarrage automatique, menu, bureau). |
 | `startup_diagnosis.py` | Cause probable d'un démarrage qui échoue, affichée au technicien. |
 | `secret_store.py` | Stockage des secrets dans le magasin du système (keyring). |

@@ -83,12 +83,17 @@ système. Sur la borne cible, il reste nécessaire :
 - paquets système Qt/WebEngine/USB : `libgl1 libegl1 libxkbcommon0
   libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libasound2
   libxcb-cursor0 libusb-1.0-0` (identiques à ceux d'`install.sh`) ;
-- la **règle udev** pour l'imprimante ESC/POS (accès USB sans root) ;
-- le **démarrage automatique** à l'ouverture de session ;
-- la configuration (`~/.config/Flowelis/settings.json` + secrets dans le
-  trousseau) — via l'éditeur graphique : `./FlowelisBorne --config` (le
-  binaire l'ouvre aussi automatiquement quand la configuration est absente
-  ou refusée), `config_editor.py` depuis le dépôt, ou en éditant le fichier.
+- la **règle udev** pour l'imprimante ESC/POS (accès USB sans root).
+
+Le binaire s'occupe lui-même du reste :
+
+- **démarrage automatique**, entrées du **menu des applications** et
+  raccourci « Configuration » sur le **bureau** : créés ou mis à jour à
+  chaque lancement (README §5.1 ; `--install-shortcuts` pour forcer,
+  `--remove-shortcuts` pour retirer) ;
+- **configuration** : l'assistant d'installation s'ouvre au premier
+  lancement (`--setup` pour le relancer), l'éditeur complet avec
+  `--config`.
 
 ## 6. Utiliser le binaire téléchargé
 

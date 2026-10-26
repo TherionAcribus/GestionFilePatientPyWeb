@@ -11,6 +11,7 @@ import requests
 import webview
 from requests.exceptions import RequestException
 
+import desktop_integration
 import logging_config
 import maintenance_pin
 import ui_assets
@@ -1159,18 +1160,42 @@ def _run_maintenance():
                           idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S)
 
 
+#: Options qui font une action puis quittent, sans lancer la borne.
+_ONE_SHOT_OPTIONS = ("--config", "--setup", "--selfcheck",
+                     "--install-shortcuts", "--remove-shortcuts")
+
+
+def _shortcuts_state_path():
+    return Config().config_path / desktop_integration.STATE_FILENAME
+
+
+def _sync_shortcuts(force=False):
+    """Crée/met à jour les raccourcis système (Linux). Jamais bloquant."""
+    if not desktop_integration.supported():
+        logger.info("Raccourcis système : non pris en charge sur cette "
+                    "plateforme (Linux uniquement).")
+        return []
+    try:
+        return desktop_integration.install_shortcuts(
+            _shortcuts_state_path(), ui_assets.ASSETS_DIR / "flowelis.png",
+            force=force)
+    except Exception:
+        # FRONTIÈRE : un raccourci raté ne doit jamais empêcher la borne
+        # de démarrer.
+        logger.exception("Création des raccourcis système impossible.")
+        return []
+
+
 def _restart_command(argv=None, executable=None, frozen=None):
     """Ligne de commande qui relance la borne à l'identique.
 
     Binaire PyInstaller : le binaire lui-même. Depuis les sources : le même
     interpréteur sur ce fichier. Les options de lancement sont conservées,
-    sauf ``--config`` / ``--setup`` / ``--selfcheck`` qui ne mènent pas à la
-    borne."""
+    sauf celles qui ne mènent pas à la borne (``_ONE_SHOT_OPTIONS``)."""
     argv = sys.argv if argv is None else argv
     executable = sys.executable if executable is None else executable
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
-    options = [a for a in argv[1:]
-               if a not in ("--config", "--setup", "--selfcheck")]
+    options = [a for a in argv[1:] if a not in _ONE_SHOT_OPTIONS]
     if frozen:
         return [executable, *options]
     return [executable, os.path.abspath(__file__), *options]
@@ -1286,7 +1311,27 @@ if __name__ == '__main__':
         logger.info("Ouverture de l'assistant d'installation (--setup).")
         sys.exit(0 if _run_setup(kiosk_follows=False) is not None else 1)
 
+    if '--install-shortcuts' in sys.argv:
+        written = _sync_shortcuts(force=True)
+        print("\n".join(f"Raccourci : {path}" for path in written)
+              or "Aucun raccourci créé (voir le journal).")
+        sys.exit(0 if desktop_integration.supported() else 1)
+
+    if '--remove-shortcuts' in sys.argv:
+        removed = (desktop_integration.remove_shortcuts(_shortcuts_state_path())
+                   if desktop_integration.supported() else [])
+        print("\n".join(f"Supprimé : {path}" for path in removed)
+              or "Aucun raccourci de la borne à supprimer.")
+        sys.exit(0)
+
     logger.info("Démarrage de la borne Flowelis.")
+
+    # Binaire de release : il crée lui-même ses raccourcis (démarrage
+    # automatique, menu, bureau) — install.sh n'est pas passé par là. Pas
+    # depuis les sources : un lancement depuis l'IDE ne doit pas toucher au
+    # poste de développement.
+    if getattr(sys, "frozen", False):
+        _sync_shortcuts()
 
     client = _prepare_client()
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)

@@ -8,6 +8,7 @@ import tkinter as tk
 from dataclasses import fields
 from tkinter import messagebox, ttk
 
+import desktop_integration
 import editor_logic
 import logging_config
 import maintenance_pin
@@ -259,8 +260,8 @@ class ConfigEditor(tk.Tk):
         tk.Label(
             parent,
             text=(f"Touche {MAINTENANCE_KEY} sur un clavier branché à la "
-                  "borne : propose d'ouvrir cette configuration ou "
-                  "d'éteindre la borne. Code PIN facultatif (chiffres "
+                  "borne : propose d'ouvrir cette configuration ou de "
+                  "quitter l'application. Code PIN facultatif (chiffres "
                   f"uniquement, {maintenance_pin.PIN_MIN_LENGTH} à "
                   f"{maintenance_pin.PIN_MAX_LENGTH}) ; laissez les champs "
                   "vides pour ne rien changer."),
@@ -857,10 +858,11 @@ class MaintenanceActionDialog(tk.Tk):
     """Suite à donner après la touche de maintenance.
 
     ``action`` vaut ``maintenance_pin.MAINTENANCE_ACTION_CONFIGURE`` ou
-    ``MAINTENANCE_ACTION_SHUTDOWN`` selon le bouton choisi ; il reste None
+    ``MAINTENANCE_ACTION_QUIT`` selon le bouton choisi ; il reste None
     sur annulation, Échap ou inactivité — la borne repart alors en service.
-    « Éteindre la borne » demande confirmation : un tap de trop sur l'écran
-    tactile ne doit pas arrêter la borne pour la journée."""
+    « Quitter l'application » demande confirmation : un tap de trop sur
+    l'écran tactile ne doit pas arrêter la borne pour la journée. Seule
+    l'application se ferme : le PC reste allumé."""
 
     def __init__(self, timeout_s=ACTION_DIALOG_TIMEOUT_S):
         super().__init__()
@@ -884,8 +886,8 @@ class MaintenanceActionDialog(tk.Tk):
         buttons.pack(pady=(14, 0), fill="x")
         ttk.Button(buttons, text="Reprendre le service",
                    command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Éteindre la borne",
-                   command=self._shutdown).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(buttons, text="Quitter l'application",
+                   command=self._quit_app).pack(side=tk.RIGHT, padx=(0, 6))
         self._config_button = ttk.Button(
             buttons, text="Ouvrir la configuration",
             command=self._configure)
@@ -926,13 +928,14 @@ class MaintenanceActionDialog(tk.Tk):
         self.action = maintenance_pin.MAINTENANCE_ACTION_CONFIGURE
         self.destroy()
 
-    def _shutdown(self):
+    def _quit_app(self):
         if not messagebox.askyesno(
-                "Éteindre la borne",
-                "La borne restera arrêtée jusqu'à sa prochaine ouverture.\n\n"
-                "Éteindre la borne ?", parent=self):
+                "Quitter l'application",
+                maintenance_pin.quit_confirmation_text(
+                    desktop_integration.supported()),
+                parent=self):
             return
-        self.action = maintenance_pin.MAINTENANCE_ACTION_SHUTDOWN
+        self.action = maintenance_pin.MAINTENANCE_ACTION_QUIT
         self.destroy()
 
 

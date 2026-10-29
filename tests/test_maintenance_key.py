@@ -1,6 +1,6 @@
 """Touche de maintenance (F10) : raccourci Qt, fermeture de la borne, code
-PIN, choix de l'action (configuration ou extinction), ouverture de
-l'éditeur et relance.
+PIN, choix de l'action (configuration ou fermeture de l'application),
+ouverture de l'éditeur et relance.
 
 PySide6 n'est pas installé en CI : le raccourci est testé avec de faux
 modules Qt ; un test supplémentaire utilise le vrai Qt quand il est présent.
@@ -208,11 +208,11 @@ def test_fenetre_pin_en_panne_refuse_l_acces(monkeypatch):
     assert [c[0] for c in calls] == ["pin"]
 
 
-def test_choix_extinction_empeche_la_relance(monkeypatch):
+def test_choix_quitter_l_application_empeche_la_relance(monkeypatch):
     calls = []
     _settings_with_pin(monkeypatch, "")
     _fake_editor(monkeypatch, calls,
-                 action=maintenance_pin.MAINTENANCE_ACTION_SHUTDOWN)
+                 action=maintenance_pin.MAINTENANCE_ACTION_QUIT)
     assert main._run_maintenance() is False
     assert calls == [("action",)]
 

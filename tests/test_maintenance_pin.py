@@ -120,3 +120,29 @@ def test_empreinte_illisible_signalee():
 def test_empreinte_de_mauvais_type_signalee():
     errors = _valid_settings(maintenance_pin_hash=1234).validate()
     assert any("maintenance_pin_hash" in e for e in errors)
+
+
+# --- « Quitter l'application » (fenêtre de maintenance) ----------------------
+
+
+@pytest.mark.parametrize("shortcuts", [True, False])
+def test_quitter_dit_que_le_pc_reste_allume(shortcuts):
+    """Le bouton ferme l'application, pas le PC : le texte doit le dire,
+    et ne plus parler d'« éteindre »."""
+    text = maintenance_pin.quit_confirmation_text(shortcuts)
+    assert "Le PC reste allumé" in text
+    assert "ne se relancera pas" in text
+    assert "teindre" not in text
+    assert text.endswith("Quitter l'application ?")
+
+
+def test_quitter_indique_le_raccourci_quand_il_existe():
+    text = maintenance_pin.quit_confirmation_text(True)
+    assert "menu des applications" in text
+    assert "ouverture de session" in text
+
+
+def test_quitter_sans_raccourci_ne_promet_pas_de_menu():
+    text = maintenance_pin.quit_confirmation_text(False)
+    assert "menu des applications" not in text
+    assert "redémarrez le PC" in text

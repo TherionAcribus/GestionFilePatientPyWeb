@@ -1025,7 +1025,7 @@ class WebViewClient:
         """Touche de maintenance pressée : ferme la fenêtre kiosque.
 
         La suite (code PIN, choix maintenance, éditeur, relance ou
-        extinction) se fait APRÈS la boucle Qt, dans ``__main__`` : Tk et
+        fermeture de l'application) se fait APRÈS la boucle Qt, dans ``__main__`` : Tk et
         Qt ne cohabitent pas dans une même boucle, et une borne relancée
         repart d'une configuration relue proprement."""
         if self.maintenance_requested:
@@ -1234,7 +1234,7 @@ def _maintenance_pin_granted(stored_hash):
 
 
 def _ask_maintenance_action():
-    """Demande la suite à donner (configuration, extinction ou reprise).
+    """Demande la suite à donner (configuration, fermeture ou reprise).
 
     Renvoie la constante d'action choisie, ou None si la fenêtre n'a pas pu
     s'afficher ou a été abandonnée — la borne reprend alors son service."""
@@ -1253,13 +1253,14 @@ def _run_maintenance():
 
     Appelé après la fermeture de la fenêtre kiosque. Renvoie True si la
     borne doit être relancée — partout sauf après un choix explicite
-    « Éteindre la borne »."""
+    « Quitter l'application »."""
     if not _maintenance_pin_granted(Config().settings.maintenance_pin_hash):
         logger.info("Accès maintenance non accordé : relance de la borne.")
         return True
     action = _ask_maintenance_action()
-    if action == maintenance_pin.MAINTENANCE_ACTION_SHUTDOWN:
-        logger.info("Extinction de la borne demandée (touche de maintenance).")
+    if action == maintenance_pin.MAINTENANCE_ACTION_QUIT:
+        logger.info("Fermeture de l'application demandée (touche de "
+                    "maintenance) : la borne ne sera pas relancée.")
         return False
     if action == maintenance_pin.MAINTENANCE_ACTION_CONFIGURE:
         logger.info("Accès maintenance accordé : ouverture de la configuration.")
@@ -1447,7 +1448,7 @@ if __name__ == '__main__':
     client.run()
 
     # Touche de maintenance : la fenêtre s'est fermée pour laisser place à la
-    # maintenance ; la borne est relancée sauf si l'extinction a été choisie
-    # (_restart_kiosk ne revient pas — il termine le processus).
+    # maintenance ; la borne est relancée sauf si « Quitter l'application »
+    # a été choisi (_restart_kiosk ne revient pas — il termine le processus).
     if client.maintenance_requested and _run_maintenance():
         _restart_kiosk()

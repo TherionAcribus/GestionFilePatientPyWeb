@@ -179,9 +179,10 @@ plein écran) :
    - **Ouvrir la configuration** (choix par défaut, touche Entrée) : l'éditeur
      s'ouvre et, à sa fermeture — enregistrée ou non — **la borne redémarre
      d'elle-même** avec la configuration en vigueur ;
-   - **Éteindre la borne** : après confirmation, l'application se termine et
-     **ne redémarre pas** — le PC peut alors être éteint ou l'application
-     relancée à la main ;
+   - **Quitter l'application** : après confirmation, l'application borne se
+     ferme et **ne redémarre pas** (le PC, lui, reste allumé). Pour la
+     relancer : « Flowelis Borne » dans le menu des applications, ou
+     redémarrage du PC (lancement automatique à l'ouverture de session) ;
    - **Reprendre le service** (Échap, ou 60 s sans réponse) : la borne
      redémarre telle quelle.
 

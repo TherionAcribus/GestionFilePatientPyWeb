@@ -1,8 +1,8 @@
 """Code PIN de maintenance de la borne (logique pure, sans interface).
 
 La touche de maintenance (F10, cf. ``main.MAINTENANCE_KEY``) ouvre la
-fenêtre de maintenance — choix entre la configuration et l'extinction de la
-borne — sans quitter l'application. Le patient n'a pas de clavier :
+fenêtre de maintenance : ouvrir la configuration, reprendre le service ou
+quitter l'application borne. Le patient n'a pas de clavier :
 le raccourci suffit à le tenir à l'écart. Le code PIN est donc **optionnel** ;
 il protège les sites où un clavier reste branché et accessible.
 
@@ -28,7 +28,28 @@ MAINTENANCE_KEY = "F10"
 #: pour être partagées avec ``main`` sans importer tkinter. Toute autre
 #: issue (annulation, inactivité, fenêtre en panne) fait repartir la borne.
 MAINTENANCE_ACTION_CONFIGURE = "configure"
-MAINTENANCE_ACTION_SHUTDOWN = "shutdown"
+#: Fermer l'application borne sans la relancer. Le PC, lui, reste allumé.
+MAINTENANCE_ACTION_QUIT = "quit"
+
+
+def quit_confirmation_text(shortcuts_supported: bool) -> str:
+    """Texte de confirmation de « Quitter l'application ».
+
+    Dit clairement que seule l'application s'arrête (pas le PC) et comment
+    la relancer. ``shortcuts_supported`` : la borne crée ses raccourcis
+    système (Linux : menu des applications + démarrage à l'ouverture de
+    session, cf. ``desktop_integration``)."""
+    if shortcuts_supported:
+        relaunch = ("Pour la relancer : « Flowelis Borne » dans le menu des "
+                    "applications, ou redémarrez le PC (elle se lance "
+                    "d'elle-même à l'ouverture de session).")
+    else:
+        relaunch = ("Pour la relancer : ouvrez à nouveau l'application "
+                    "Flowelis Borne, ou redémarrez le PC.")
+    return ("L'application borne va se fermer et ne se relancera pas "
+            "d'elle-même. Le PC reste allumé.\n\n"
+            f"{relaunch}\n\n"
+            "Quitter l'application ?")
 
 PIN_MIN_LENGTH = 4
 PIN_MAX_LENGTH = 12

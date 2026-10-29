@@ -217,6 +217,15 @@ def test_choix_quitter_l_application_empeche_la_relance(monkeypatch):
     assert calls == [("action",)]
 
 
+def test_reprendre_le_service_relance_la_borne(monkeypatch):
+    calls = []
+    _settings_with_pin(monkeypatch, "")
+    _fake_editor(monkeypatch, calls,
+                 action=maintenance_pin.MAINTENANCE_ACTION_RESUME)
+    assert main._run_maintenance() is True
+    assert calls == [("action",)]
+
+
 def test_annulation_du_choix_relance_la_borne(monkeypatch):
     calls = []
     _settings_with_pin(monkeypatch, "")

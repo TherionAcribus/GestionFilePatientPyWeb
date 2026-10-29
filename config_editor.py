@@ -854,15 +854,39 @@ def ask_maintenance_pin(stored_hash) -> bool:
     return dialog.granted
 
 
+# Fenêtre de maintenance : largeur du texte, et couleurs des boutons
+# (fond, texte, fond appuyé). Le choix par défaut est mis en avant ; l'action
+# qui arrête la borne est en rouge.
+_CHOICE_TEXT_WIDTH = 440
+_CHOICE_COLORS = {
+    "default": ("#0b5394", "white", "#073763"),
+    "neutral": ("#e3e3e3", "black", "#c8c8c8"),
+    "danger": (_DANGER_COLOR, "white", "#7f0017"),
+}
+# Contour du bouton qui a le focus clavier (Tab) : bien visible sur les trois
+# couleurs de fond.
+_FOCUS_RING_COLOR = "#f1c232"
+
+
+def _choice_style(choice, is_default):
+    """Clé de ``_CHOICE_COLORS`` pour un bouton de maintenance."""
+    if choice.danger:
+        return "danger"
+    return "default" if is_default else "neutral"
+
+
 class MaintenanceActionDialog(tk.Tk):
     """Suite à donner après la touche de maintenance.
 
-    ``action`` vaut ``maintenance_pin.MAINTENANCE_ACTION_CONFIGURE`` ou
-    ``MAINTENANCE_ACTION_QUIT`` selon le bouton choisi ; il reste None
-    sur annulation, Échap ou inactivité — la borne repart alors en service.
-    « Quitter l'application » demande confirmation : un tap de trop sur
-    l'écran tactile ne doit pas arrêter la borne pour la journée. Seule
-    l'application se ferme : le PC reste allumé."""
+    Un grand bouton par choix (``maintenance_pin.MAINTENANCE_CHOICES``),
+    empilés, chacun suivi d'une phrase d'explication : la fenêtre s'utilise
+    aussi au doigt sur l'écran tactile de la borne. « Quitter
+    l'application » est à part, en bas et en rouge, et demande
+    confirmation : un tap de trop ne doit pas arrêter la borne pour la
+    journée. Seule l'application se ferme : le PC reste allumé.
+
+    ``action`` vaut l'action du bouton choisi ; il reste None sur Échap ou
+    inactivité — la borne repart alors en service."""
 
     def __init__(self, timeout_s=ACTION_DIALOG_TIMEOUT_S):
         super().__init__()
@@ -872,26 +896,26 @@ class MaintenanceActionDialog(tk.Tk):
         self._timeout_s = timeout_s
         self._last_activity = time.monotonic()
 
-        frame = ttk.Frame(self, padding=24)
-        frame.pack()
-        ttk.Label(frame, text="Maintenance de la borne",
-                  font=('Helvetica', 12, 'bold')).pack(anchor="w")
+        frame = tk.Frame(self, padx=24, pady=20)
+        frame.pack(fill="both", expand=True)
+        tk.Label(frame, text="Maintenance de la borne",
+                 font=('Helvetica', 14, 'bold')).pack(anchor="w")
         tk.Label(
-            frame, justify="left", wraplength=400,
-            text=("La borne est arrêtée. Choisissez la suite — sans "
-                  "réponse, elle reprend son service d'elle-même."),
-        ).pack(anchor="w", pady=(8, 0))
+            frame, justify="left", wraplength=_CHOICE_TEXT_WIDTH,
+            text=(f"La borne est arrêtée. Sans réponse d'ici {timeout_s} s, "
+                  "elle reprend son service d'elle-même."),
+        ).pack(anchor="w", pady=(6, 0))
 
-        buttons = ttk.Frame(frame)
-        buttons.pack(pady=(14, 0), fill="x")
-        ttk.Button(buttons, text="Reprendre le service",
-                   command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Quitter l'application",
-                   command=self._quit_app).pack(side=tk.RIGHT, padx=(0, 6))
-        self._config_button = ttk.Button(
-            buttons, text="Ouvrir la configuration",
-            command=self._configure)
-        self._config_button.pack(side=tk.RIGHT, padx=(0, 6))
+        self.buttons = {}
+        default_action = maintenance_pin.MAINTENANCE_CHOICES[0].action
+        for choice in maintenance_pin.MAINTENANCE_CHOICES:
+            if choice.danger:
+                # Séparé des autres choix : on ne l'atteint pas par erreur
+                # en visant le bouton d'au-dessus.
+                ttk.Separator(frame).pack(fill="x", pady=(20, 4))
+            self.buttons[choice.action] = self._add_choice(
+                frame, choice,
+                _choice_style(choice, choice.action == default_action))
 
         self.bind("<Return>", lambda _e: self._configure())
         self.bind("<KP_Enter>", lambda _e: self._configure())
@@ -906,8 +930,26 @@ class MaintenanceActionDialog(tk.Tk):
         y = (self.winfo_screenheight() - self.winfo_reqheight()) // 3
         self.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         _bring_to_front(self)
-        self.after(100, self._config_button.focus_force)
+        self.after(100, self.buttons[default_action].focus_force)
         self.after(1000, self._check_timeout)
+
+    def _add_choice(self, parent, choice, style):
+        """Grand bouton (cible tactile ≈ 50 px de haut) + son explication."""
+        background, foreground, pressed = _CHOICE_COLORS[style]
+        button = tk.Button(
+            parent, text=choice.label,
+            command=lambda: self._choose(choice.action),
+            font=('Helvetica', 13, 'bold'), anchor="w", padx=16, pady=10,
+            bg=background, fg=foreground,
+            activebackground=pressed, activeforeground=foreground,
+            relief="flat", borderwidth=0, cursor="hand2",
+            highlightthickness=3, highlightcolor=_FOCUS_RING_COLOR,
+            highlightbackground=parent.cget("bg"))
+        button.pack(fill="x", pady=(12, 0))
+        tk.Label(parent, text=choice.description, fg="#444444",
+                 font=('Helvetica', 10), justify="left",
+                 wraplength=_CHOICE_TEXT_WIDTH).pack(anchor="w", pady=(3, 0))
+        return button
 
     def destroy(self):
         _cancel_pending_callbacks(self)
@@ -924,9 +966,15 @@ class MaintenanceActionDialog(tk.Tk):
             return
         self.after(1000, self._check_timeout)
 
-    def _configure(self):
-        self.action = maintenance_pin.MAINTENANCE_ACTION_CONFIGURE
+    def _choose(self, action):
+        if action == maintenance_pin.MAINTENANCE_ACTION_QUIT:
+            self._quit_app()
+            return
+        self.action = action
         self.destroy()
+
+    def _configure(self):
+        self._choose(maintenance_pin.MAINTENANCE_ACTION_CONFIGURE)
 
     def _quit_app(self):
         if not messagebox.askyesno(
@@ -940,7 +988,8 @@ class MaintenanceActionDialog(tk.Tk):
 
 
 def ask_maintenance_action():
-    """Affiche le choix de maintenance ; renvoie l'action choisie ou None."""
+    """Affiche le choix de maintenance ; renvoie l'action choisie, ou None
+    sur Échap / inactivité."""
     dialog = MaintenanceActionDialog()
     dialog.mainloop()
     return dialog.action

@@ -18,6 +18,7 @@ demander le PIN : qui accède au système contrôle déjà la borne.
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 
 #: Touche qui ouvre la maintenance depuis la borne en service. F11 est
 #: déjà pris (bascule plein écran).
@@ -28,8 +29,39 @@ MAINTENANCE_KEY = "F10"
 #: pour être partagées avec ``main`` sans importer tkinter. Toute autre
 #: issue (annulation, inactivité, fenêtre en panne) fait repartir la borne.
 MAINTENANCE_ACTION_CONFIGURE = "configure"
+#: Reprendre le service : même effet qu'une annulation (la borne redémarre).
+MAINTENANCE_ACTION_RESUME = "resume"
 #: Fermer l'application borne sans la relancer. Le PC, lui, reste allumé.
 MAINTENANCE_ACTION_QUIT = "quit"
+
+
+@dataclass(frozen=True)
+class MaintenanceChoice:
+    """Un bouton de la fenêtre de maintenance."""
+    action: str
+    label: str
+    description: str
+    #: Action qui arrête la borne : affichée à part, en rouge, confirmée.
+    danger: bool = False
+
+
+#: Boutons de la fenêtre de maintenance, de haut en bas. Le choix par défaut
+#: (Entrée) est en tête ; l'action qui arrête la borne est en dernier,
+#: séparée des autres, pour qu'un tap mal placé sur l'écran tactile ne tombe
+#: pas dessus.
+MAINTENANCE_CHOICES = (
+    MaintenanceChoice(
+        MAINTENANCE_ACTION_CONFIGURE, "Ouvrir la configuration",
+        "Serveur, imprimante, code PIN… La borne redémarre à la fermeture "
+        "de la configuration."),
+    MaintenanceChoice(
+        MAINTENANCE_ACTION_RESUME, "Reprendre le service",
+        "La borne redémarre et revient à l'accueil des patients."),
+    MaintenanceChoice(
+        MAINTENANCE_ACTION_QUIT, "Quitter l'application",
+        "Ferme la borne sans la relancer. Le PC reste allumé.",
+        danger=True),
+)
 
 
 def quit_confirmation_text(shortcuts_supported: bool) -> str:
@@ -50,6 +82,7 @@ def quit_confirmation_text(shortcuts_supported: bool) -> str:
             "d'elle-même. Le PC reste allumé.\n\n"
             f"{relaunch}\n\n"
             "Quitter l'application ?")
+
 
 PIN_MIN_LENGTH = 4
 PIN_MAX_LENGTH = 12

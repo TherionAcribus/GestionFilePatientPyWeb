@@ -146,3 +146,28 @@ def test_quitter_sans_raccourci_ne_promet_pas_de_menu():
     text = maintenance_pin.quit_confirmation_text(False)
     assert "menu des applications" not in text
     assert "redémarrez le PC" in text
+
+
+# --- Boutons de la fenêtre de maintenance -------------------------------------
+
+
+def test_choix_de_maintenance_dans_l_ordre():
+    """Défaut (Entrée) en tête ; l'action qui arrête la borne en dernier."""
+    actions = [c.action for c in maintenance_pin.MAINTENANCE_CHOICES]
+    assert actions == [maintenance_pin.MAINTENANCE_ACTION_CONFIGURE,
+                       maintenance_pin.MAINTENANCE_ACTION_RESUME,
+                       maintenance_pin.MAINTENANCE_ACTION_QUIT]
+
+
+def test_seul_quitter_est_dangereux():
+    dangerous = [c.action for c in maintenance_pin.MAINTENANCE_CHOICES
+                 if c.danger]
+    assert dangerous == [maintenance_pin.MAINTENANCE_ACTION_QUIT]
+
+
+def test_chaque_choix_est_explique():
+    for choice in maintenance_pin.MAINTENANCE_CHOICES:
+        assert choice.label and choice.description
+        assert "teindre" not in choice.label + choice.description
+    quit_choice = maintenance_pin.MAINTENANCE_CHOICES[-1]
+    assert "Le PC reste allumé" in quit_choice.description

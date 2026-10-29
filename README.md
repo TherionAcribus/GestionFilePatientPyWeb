@@ -175,16 +175,18 @@ plein écran) :
 1. la fenêtre kiosque se ferme ;
 2. si un **code PIN de maintenance** est défini, il est demandé (3 essais,
    abandon après 60 s sans saisie) ;
-3. une fenêtre propose alors trois suites :
-   - **Ouvrir la configuration** (choix par défaut, touche Entrée) : l'éditeur
-     s'ouvre et, à sa fermeture — enregistrée ou non — **la borne redémarre
-     d'elle-même** avec la configuration en vigueur ;
-   - **Quitter l'application** : après confirmation, l'application borne se
-     ferme et **ne redémarre pas** (le PC, lui, reste allumé). Pour la
-     relancer : « Flowelis Borne » dans le menu des applications, ou
-     redémarrage du PC (lancement automatique à l'ouverture de session) ;
+3. une fenêtre propose alors trois suites, en grands boutons empilés
+   utilisables au doigt, chacun suivi d'une phrase d'explication :
+   - **Ouvrir la configuration** (en bleu, choix par défaut, touche Entrée) :
+     l'éditeur s'ouvre et, à sa fermeture — enregistrée ou non — **la borne
+     redémarre d'elle-même** avec la configuration en vigueur ;
    - **Reprendre le service** (Échap, ou 60 s sans réponse) : la borne
-     redémarre telle quelle.
+     redémarre telle quelle ;
+   - **Quitter l'application** (en rouge, à part en bas) : après
+     confirmation, l'application borne se ferme et **ne redémarre pas** (le
+     PC, lui, reste allumé). Pour la relancer : « Flowelis Borne » dans le
+     menu des applications, ou redémarrage du PC (lancement automatique à
+     l'ouverture de session).
 
 La touche fonctionne sur tous les écrans : page patient, « Borne hors ligne »
 et « Configuration invalide ». Un éditeur oublié ouvert se ferme sans

@@ -1266,7 +1266,9 @@ def _run_maintenance():
         logger.info("Accès maintenance accordé : ouverture de la configuration.")
         _launch_config_editor(kiosk_follows=True,
                               idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S)
-    # Annulation, inactivité ou fenêtre en panne : la borne reprend.
+    elif action == maintenance_pin.MAINTENANCE_ACTION_RESUME:
+        logger.info("Reprise du service demandée (touche de maintenance).")
+    # Reprise, annulation, inactivité ou fenêtre en panne : la borne reprend.
     return True
 
 

@@ -107,34 +107,6 @@ class _JSApiNamespace:
         return []
 
 
-class WindowControlAPI:
-    """API pour la gestion des contrôles de la fenêtre"""
-    def __init__(self):
-        self._fullscreen_callback = None
-
-    def set_fullscreen_callback(self, callback):
-        """Définit la fonction de callback pour le plein écran"""
-        self._fullscreen_callback = callback
-
-    def toggle_fullscreen(self):
-        """Méthode exposée à JavaScript pour basculer le plein écran"""
-        if self._fullscreen_callback:
-            try:
-                return self._fullscreen_callback()
-            except Exception as e:
-                # FRONTIÈRE (pont JavaScript) : la page attend toujours un
-                # dictionnaire ; on journalise la trace et on renvoie l'échec.
-                logger.exception("Erreur inattendue au basculement plein écran.")
-                return {
-                    'success': False,
-                    'message': f'Erreur de plein écran : {e!s}'
-                }
-        return {
-            'success': False,
-            'message': 'Gestion du plein écran non initialisée'
-        }
-
-
 class WebViewClient:
     def __init__(self):
         self.window = None
@@ -174,7 +146,6 @@ class WebViewClient:
 
         # Création des APIs
         self.printer_api = PrinterAPI()
-        self.window_api = WindowControlAPI()
 
         # État opérationnel de la borne. Tant qu'il est faux, l'écran local
         # « Borne hors ligne » est affiché et /patient n'est pas chargée.
@@ -271,13 +242,9 @@ class WebViewClient:
 
     def create_window(self):
         """Crée et configure la fenêtre WebView"""
-        self.window_api.set_fullscreen_callback(self.toggle_fullscreen)
-
         js_api = _JSApiNamespace(
             printer=_JSApiNamespace(
                 print_ticket=self.printer_api.print_ticket),
-            window=_JSApiNamespace(
-                toggle_fullscreen=self.window_api.toggle_fullscreen),
             kiosk=_JSApiNamespace(
                 borne_id=self.printer_api.borne_id),
         )
@@ -320,8 +287,12 @@ class WebViewClient:
         # Installé avant l'évènement « shown » : le profil Qt existe alors, et
         # toutes les navigations/redirections suivantes passent par l'allowlist.
         self.window.events.before_show += self._install_navigation_guard
-        # Même évènement (exécuté dans le fil Qt) : raccourci de maintenance.
-        self.window.events.before_show += self._install_maintenance_shortcut
+        # Même évènement (exécuté dans le fil Qt) : touches F10 et F11.
+        self.window.events.before_show += self._install_kiosk_shortcuts
+        # Toute fermeture de la fenêtre (Alt+F4, croix hors plein écran…)
+        # passe par la maintenance, comme F10 : jamais de borne arrêtée en
+        # silence.
+        self.window.events.closing += self._on_window_closing
         # La fenêtre est prête : on peut désormais naviguer vers /patient si la
         # borne est (ou devient) opérationnelle.
         self.window.events.shown += self._on_window_shown
@@ -987,47 +958,71 @@ class WebViewClient:
         except Exception:
             logger.exception("Installation du garde-navigation impossible.")
 
-    def _install_maintenance_shortcut(self):
-        """Pose le raccourci clavier de maintenance (F10) sur la fenêtre Qt.
+    def _install_kiosk_shortcuts(self):
+        """Pose les touches F10 (maintenance) et F11 (plein écran) sur la
+        fenêtre Qt.
 
-        Raccourci Qt natif plutôt que script injecté : il fonctionne sur TOUS
-        les écrans (page patient, « Borne hors ligne », « Configuration
-        invalide »), même si la page ne répond plus. Appelé par l'évènement
-        ``before_show``, que pywebview exécute dans le fil Qt — condition pour
-        créer un objet Qt rattaché à la fenêtre."""
+        Raccourcis Qt natifs plutôt que script injecté : ils fonctionnent sur
+        TOUS les écrans (page patient, « Borne hors ligne », « Configuration
+        invalide »), même si la page ne répond plus, et aucune page servie ne
+        peut les déclencher. Appelé par l'évènement ``before_show``, que
+        pywebview exécute dans le fil Qt — condition pour créer un objet Qt
+        rattaché à la fenêtre."""
         try:
             from PySide6.QtCore import Qt
             from PySide6.QtGui import QKeySequence, QShortcut
         except ImportError:
-            logger.warning("Raccourci de maintenance indisponible (Qt absent).")
+            logger.warning("Touches F10/F11 indisponibles (Qt absent).")
             return
         native = getattr(self.window, "native", None)
         if native is None:
-            logger.warning("Raccourci de maintenance indisponible (fenêtre "
-                           "native introuvable).")
+            logger.warning("Touches F10/F11 indisponibles (fenêtre native "
+                           "introuvable).")
             return
-        try:
-            shortcut = QShortcut(QKeySequence(maintenance_pin.MAINTENANCE_KEY),
-                                 native)
-            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            shortcut.activated.connect(self.request_maintenance)
-            # Référence Python conservée : sans elle, le raccourci peut être
-            # collecté et cesser de répondre.
-            native.maintenance_shortcut = shortcut
-        except Exception:
-            # FRONTIÈRE Qt : sans raccourci, la borne doit quand même tourner.
-            logger.exception("Installation du raccourci de maintenance "
-                             "impossible.")
+        for key, slot, attribute in (
+                (maintenance_pin.MAINTENANCE_KEY, self.request_maintenance,
+                 "maintenance_shortcut"),
+                (maintenance_pin.FULLSCREEN_KEY, self.request_fullscreen_toggle,
+                 "fullscreen_shortcut")):
+            try:
+                shortcut = QShortcut(QKeySequence(key), native)
+                shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+                shortcut.activated.connect(slot)
+                # Référence Python conservée : sans elle, le raccourci peut
+                # être collecté et cesser de répondre.
+                setattr(native, attribute, shortcut)
+            except Exception:
+                # FRONTIÈRE Qt : sans raccourci, la borne doit quand même
+                # tourner.
+                logger.exception("Installation de la touche %s impossible.",
+                                 key)
+        logger.info("Touche de maintenance : %s ; plein écran : %s.",
+                    maintenance_pin.MAINTENANCE_KEY,
+                    maintenance_pin.FULLSCREEN_KEY)
+
+    def _on_window_closing(self):
+        """La fenêtre kiosque va se fermer.
+
+        Hors touche de maintenance (Alt+F4, croix de la fenêtre une fois
+        sortie du plein écran…), la fermeture passe quand même par la
+        maintenance : code PIN éventuel, puis choix — et la borne repart si
+        personne ne choisit « Quitter l'application ». Sans cela, la borne
+        restait arrêtée jusqu'au prochain démarrage du PC. La fermeture
+        elle-même n'est pas bloquée (renvoyer False l'annulerait)."""
+        if self.maintenance_requested:
             return
-        logger.info("Touche de maintenance : %s.", maintenance_pin.MAINTENANCE_KEY)
+        self.maintenance_requested = True
+        logger.warning("Fenêtre de la borne fermée sans la touche de "
+                       "maintenance (Alt+F4, croix…) : passage par la "
+                       "maintenance.")
 
     def request_maintenance(self):
         """Touche de maintenance pressée : ferme la fenêtre kiosque.
 
         La suite (code PIN, choix maintenance, éditeur, relance ou
-        fermeture de l'application) se fait APRÈS la boucle Qt, dans ``__main__`` : Tk et
-        Qt ne cohabitent pas dans une même boucle, et une borne relancée
-        repart d'une configuration relue proprement."""
+        fermeture de l'application) se fait APRÈS la boucle Qt, dans
+        ``__main__`` : Tk et Qt ne cohabitent pas dans une même boucle, et une
+        borne relancée repart d'une configuration relue proprement."""
         if self.maintenance_requested:
             return
         self.maintenance_requested = True
@@ -1064,9 +1059,6 @@ class WebViewClient:
         self.inject_pywebview_bridge()
         self.inject_kiosk_protection()
 
-        # Injecte le gestionnaire de touches
-        self.inject_keyboard_handler()
-
         # Page /login atteinte : la session borne est absente ou expirée (la
         # route /patient/kiosk_login — qui CRÉE la session — ne doit PAS être
         # confondue avec la page de connexion ; on compare le chemin exact).
@@ -1080,28 +1072,49 @@ class WebViewClient:
             logger.info("Redirection inattendue vers la racine détectée, chargement de /patient")
             self.window.load_url(f"{self.base_url}/patient")
 
-    def toggle_fullscreen(self):
-        """Gère le basculement du mode plein écran"""
+    def _fullscreen_now(self):
+        """La fenêtre est-elle en plein écran ? État réel de Qt si possible
+        (le gestionnaire de fenêtres peut l'avoir changé), sinon le dernier
+        état connu."""
+        native = getattr(self.window, "native", None)
         try:
-            self.is_fullscreen = not self.is_fullscreen
-            self.window.toggle_fullscreen()
-            return {
-                'success': True,
-                'message': 'Mode plein écran basculé avec succès',
-                'is_fullscreen': self.is_fullscreen
-            }
-        except Exception as e:
-            # Frontière pywebview : renvoyer un résultat au lieu de propager
-            # dans le pont JavaScript.
-            logger.exception("Basculement du mode plein écran impossible.")
-            return {
-                'success': False,
-                'message': f'Erreur lors du basculement du mode plein écran : {e}'
-            }
+            return bool(native.isFullScreen())
+        except Exception:
+            return self.is_fullscreen
 
-    def inject_keyboard_handler(self):
-        """Injecte le gestionnaire de touches F11 (assets/keyboard.js)."""
-        self._run_page_script(ui_assets.keyboard_script())
+    def request_fullscreen_toggle(self):
+        """Touche F11 : bascule plein écran / fenêtre.
+
+        Avec un code PIN de maintenance, F11 ne fait PAS sortir du plein
+        écran : la fenêtre obtenue donnerait accès au bureau et à sa croix
+        de fermeture, sans PIN. Il faut alors passer par F10, puis décocher
+        « Plein écran » dans la configuration. Revenir en plein écran reste
+        toujours permis."""
+        fullscreen = self._fullscreen_now()
+        if not maintenance_pin.fullscreen_toggle_allowed(
+                fullscreen, Config().settings.maintenance_pin_hash):
+            logger.info("Touche %s ignorée : un code PIN de maintenance est "
+                        "défini. Pour quitter le plein écran : %s, puis "
+                        "« Plein écran » dans la configuration.",
+                        maintenance_pin.FULLSCREEN_KEY,
+                        maintenance_pin.MAINTENANCE_KEY)
+            return
+        self.toggle_fullscreen(fullscreen)
+
+    def toggle_fullscreen(self, fullscreen=None):
+        """Bascule plein écran / fenêtre ; renvoie True si c'est fait."""
+        if fullscreen is None:
+            fullscreen = self._fullscreen_now()
+        try:
+            self.window.toggle_fullscreen()
+        except Exception:
+            # FRONTIÈRE pywebview (appelé depuis un raccourci Qt).
+            logger.exception("Basculement du mode plein écran impossible.")
+            return False
+        self.is_fullscreen = not fullscreen
+        logger.info("Plein écran %s.",
+                    "activé" if self.is_fullscreen else "désactivé")
+        return True
 
     def inject_kiosk_protection(self):
         """Injecte les protections kiosque sur les pages servies (clic droit,

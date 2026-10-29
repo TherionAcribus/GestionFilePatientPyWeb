@@ -166,11 +166,10 @@ Le binaire ouvre aussi **automatiquement** cet éditeur au premier démarrage
 ou quand la configuration est refusée (fichier absent, illisible ou
 invalide) — aucune connaissance du chemin n'est nécessaire.
 
-### 4.3 Touche de maintenance (F10)
+### 4.3 Touches de maintenance (F10) et de plein écran (F11)
 
 Sur une borne **en service**, la touche **F10** d'un clavier branché ouvre la
-maintenance sans terminal ni redémarrage manuel (F11 reste la bascule
-plein écran) :
+maintenance sans terminal ni redémarrage manuel :
 
 1. la fenêtre kiosque se ferme ;
 2. si un **code PIN de maintenance** est défini, il est demandé (3 essais,
@@ -188,10 +187,24 @@ plein écran) :
      menu des applications, ou redémarrage du PC (lancement automatique à
      l'ouverture de session).
 
-La touche fonctionne sur tous les écrans : page patient, « Borne hors ligne »
-et « Configuration invalide ». Un éditeur oublié ouvert se ferme sans
-enregistrer après **10 minutes** sans clavier ni souris, et la borne reprend
-son service.
+Les touches F10 et F11 fonctionnent sur tous les écrans : page patient,
+« Borne hors ligne » et « Configuration invalide ». Un éditeur oublié ouvert
+se ferme sans enregistrer après **10 minutes** sans clavier ni souris, et la
+borne reprend son service.
+
+**Toute fermeture de la fenêtre** (Alt+F4, croix de la fenêtre hors plein
+écran…) suit le même chemin que F10 : code PIN éventuel puis menu de
+maintenance. La borne ne reste donc jamais arrêtée par mégarde : seul le
+choix « Quitter l'application » l'arrête.
+
+Dans le menu et la fenêtre du code PIN, **Entrée active le bouton
+sélectionné** (Tab pour changer de bouton) ; sans sélection, Entrée ouvre la
+configuration ou valide le code.
+
+La touche **F11** bascule entre plein écran et fenêtre. **Si un code PIN est
+défini, F11 ne fait pas sortir du plein écran** (la fenêtre donnerait accès
+au bureau sans code) : passer par F10, puis décocher « Plein écran » dans la
+configuration. Revenir en plein écran avec F11 reste toujours possible.
 
 Le **code PIN est facultatif** (section « Maintenance » de l'éditeur, 4 à 12
 chiffres) : le patient n'a pas de clavier, la touche suffit en général. Il

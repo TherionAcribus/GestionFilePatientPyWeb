@@ -58,11 +58,6 @@
     // l'envoi pourrait déjà avoir imprimé le ticket.
     window.pywebview.api.printer.print_ticket.supportsPrintJobId = true;
 
-    window.pywebview.api.window = window.pywebview.api.window || {};
-    window.pywebview.api.window.toggle_fullscreen = function() {
-        return invoke('window.toggle_fullscreen', arguments);
-    };
-
     window.pywebview.api.kiosk = window.pywebview.api.kiosk || {};
     window.pywebview.api.kiosk.borne_id = function() {
         return invoke('kiosk.borne_id', arguments);

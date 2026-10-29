@@ -175,11 +175,6 @@ def kiosk_protection_script() -> str:
     return _script("kiosk_protection.js")
 
 
-def keyboard_script() -> str:
-    """Gestionnaire de touches (F11 = plein écran via le pont pywebview)."""
-    return _script("keyboard.js")
-
-
 def pywebview_bridge_script() -> str:
     """Pont JavaScript compatible CSP vers les fonctions Python exposées."""
     return _script("pywebview_bridge.js")

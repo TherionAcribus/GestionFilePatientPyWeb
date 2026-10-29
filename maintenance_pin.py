@@ -20,9 +20,10 @@ import hmac
 import secrets
 from dataclasses import dataclass
 
-#: Touche qui ouvre la maintenance depuis la borne en service. F11 est
-#: déjà pris (bascule plein écran).
+#: Touche qui ouvre la maintenance depuis la borne en service.
 MAINTENANCE_KEY = "F10"
+#: Touche qui bascule la borne entre plein écran et fenêtre (technicien).
+FULLSCREEN_KEY = "F11"
 
 #: Actions proposées par la fenêtre de maintenance (config_editor.
 #: MaintenanceActionDialog) après la touche de maintenance ; définies ici
@@ -151,6 +152,15 @@ def pin_required(stored) -> bool:
     configuration la signale déjà, et la borne refuse alors de démarrer
     tant qu'elle n'est pas corrigée."""
     return is_valid_hash(stored)
+
+
+def fullscreen_toggle_allowed(currently_fullscreen: bool, stored) -> bool:
+    """La touche plein écran (F11) peut-elle agir ?
+
+    Revenir en plein écran est toujours permis. En sortir ne l'est que sans
+    code PIN : la fenêtre obtenue donnerait accès au bureau et à la croix de
+    fermeture, ce qui contournerait le PIN de la touche de maintenance."""
+    return not currently_fullscreen or not pin_required(stored)
 
 
 def verify_pin(pin, stored) -> bool:

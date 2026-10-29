@@ -98,8 +98,11 @@ def test_scripts_are_idempotent_guarded():
     assert "supportsPrintJobId = true" in ui_assets.pywebview_bridge_script()
 
 
-def test_keyboard_script_binds_f11():
-    assert "F11" in ui_assets.keyboard_script()
+def test_plein_ecran_n_est_plus_expose_aux_pages():
+    """F11 est un raccourci Qt natif (main._install_kiosk_shortcuts) : aucune
+    page servie ne doit pouvoir sortir la borne du plein écran."""
+    assert "toggle_fullscreen" not in ui_assets.pywebview_bridge_script()
+    assert not (ui_assets.ASSETS_DIR / "keyboard.js").exists()
 
 
 # --- Robustesse : ressource illisible --------------------------------------
@@ -131,7 +134,6 @@ def test_missing_script_asset_yields_empty_injection(monkeypatch, tmp_path):
     # ressource manque (on ne fait pas échouer le chargement).
     monkeypatch.setattr(ui_assets, "ASSETS_DIR", tmp_path)
     assert ui_assets.kiosk_protection_script() == ""
-    assert ui_assets.keyboard_script() == ""
     assert ui_assets.pywebview_bridge_script() == ""
 
 
@@ -145,7 +147,6 @@ def test_each_placeholder_appears_once_per_asset():
         "kiosk_input.js": ["HIDE_CURSOR"],
         "offline.html": ["DIAGNOSTIC"],
         "kiosk_protection.js": [],
-        "keyboard.js": [],
         "pywebview_bridge.js": [],
     }
     for name, placeholders in expected.items():

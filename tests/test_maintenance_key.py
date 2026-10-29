@@ -19,19 +19,39 @@ import maintenance_pin
 def _client():
     client = main.WebViewClient.__new__(main.WebViewClient)
     client.maintenance_requested = False
+    client.is_fullscreen = True
     return client
 
 
 class _FakeWindow:
-    def __init__(self, native=None, fail=False):
+    def __init__(self, native=None, fail=False, toggle_fails=False):
         self.native = native
         self.destroyed = 0
+        self.toggles = 0
         self._fail = fail
+        self._toggle_fails = toggle_fails
 
     def destroy(self):
         if self._fail:
             raise RuntimeError("fenêtre déjà fermée")
         self.destroyed += 1
+
+    def toggle_fullscreen(self):
+        if self._toggle_fails:
+            raise RuntimeError("fenêtre indisponible")
+        self.toggles += 1
+        if self.native is not None and hasattr(self.native, "fullscreen"):
+            self.native.fullscreen = not self.native.fullscreen
+
+
+class _FakeNative:
+    """Fenêtre Qt minimale : seul l'état plein écran est lu."""
+
+    def __init__(self, fullscreen=True):
+        self.fullscreen = fullscreen
+
+    def isFullScreen(self):
+        return self.fullscreen
 
 
 # --- Raccourci Qt (faux modules) ----------------------------------------------
@@ -78,31 +98,46 @@ def _fake_qt(monkeypatch):
     return created
 
 
-def test_raccourci_pose_sur_la_fenetre_native(monkeypatch):
+def test_raccourcis_poses_sur_la_fenetre_native(monkeypatch):
     created = _fake_qt(monkeypatch)
-    native = types.SimpleNamespace()
+    native = _FakeNative()
     client = _client()
     client.window = _FakeWindow(native)
 
-    client._install_maintenance_shortcut()
+    client._install_kiosk_shortcuts()
 
-    assert len(created) == 1
-    shortcut = created[0]
-    assert shortcut.sequence == maintenance_pin.MAINTENANCE_KEY == "F10"
-    assert shortcut.parent is native
-    assert shortcut.context == "application"
-    assert native.maintenance_shortcut is shortcut  # référence conservée
+    assert [s.sequence for s in created] == ["F10", "F11"]
+    for shortcut in created:
+        assert shortcut.parent is native
+        assert shortcut.context == "application"
+    # Références conservées (sinon Qt peut perdre les raccourcis).
+    assert native.maintenance_shortcut is created[0]
+    assert native.fullscreen_shortcut is created[1]
 
-    shortcut.activated.emit()
+    created[0].activated.emit()
     assert client.maintenance_requested
     assert client.window.destroyed == 1
+
+
+def test_f11_natif_bascule_le_plein_ecran(monkeypatch):
+    created = _fake_qt(monkeypatch)
+    _settings_with_pin(monkeypatch, "")
+    native = _FakeNative(fullscreen=True)
+    client = _client()
+    client.window = _FakeWindow(native)
+    client._install_kiosk_shortcuts()
+
+    created[1].activated.emit()
+    assert client.window.toggles == 1
+    assert client.is_fullscreen is False
+    assert not client.maintenance_requested
 
 
 def test_sans_fenetre_native_la_borne_continue(monkeypatch):
     created = _fake_qt(monkeypatch)
     client = _client()
     client.window = _FakeWindow(native=None)
-    client._install_maintenance_shortcut()   # ne lève pas
+    client._install_kiosk_shortcuts()   # ne lève pas
     assert created == []
 
 
@@ -110,11 +145,81 @@ def test_sans_qt_la_borne_continue(monkeypatch):
     monkeypatch.setitem(sys.modules, "PySide6", None)  # import impossible
     client = _client()
     client.window = _FakeWindow(types.SimpleNamespace())
-    client._install_maintenance_shortcut()   # ne lève pas
+    client._install_kiosk_shortcuts()   # ne lève pas
 
 
 def test_f11_n_est_pas_la_touche_de_maintenance():
-    assert maintenance_pin.MAINTENANCE_KEY != "F11"
+    assert maintenance_pin.MAINTENANCE_KEY != maintenance_pin.FULLSCREEN_KEY
+
+
+# --- F11 et code PIN --------------------------------------------------------------
+
+def test_f11_sans_pin_sort_du_plein_ecran(monkeypatch):
+    _settings_with_pin(monkeypatch, "")
+    client = _client()
+    client.window = _FakeWindow(_FakeNative(fullscreen=True))
+    client.request_fullscreen_toggle()
+    assert client.window.toggles == 1
+    assert client.window.native.fullscreen is False
+
+
+def test_f11_avec_pin_ne_sort_pas_du_plein_ecran(monkeypatch):
+    """Sinon F11 contournerait le PIN : bureau et croix de fermeture."""
+    _settings_with_pin(monkeypatch, maintenance_pin.hash_pin("1234"))
+    client = _client()
+    client.window = _FakeWindow(_FakeNative(fullscreen=True))
+    client.request_fullscreen_toggle()
+    assert client.window.toggles == 0
+    assert client.window.native.fullscreen is True
+
+
+def test_f11_avec_pin_peut_toujours_revenir_en_plein_ecran(monkeypatch):
+    _settings_with_pin(monkeypatch, maintenance_pin.hash_pin("1234"))
+    client = _client()
+    client.is_fullscreen = False
+    client.window = _FakeWindow(_FakeNative(fullscreen=False))
+    client.request_fullscreen_toggle()
+    assert client.window.toggles == 1
+    assert client.is_fullscreen is True
+
+
+def test_f11_se_fie_a_l_etat_reel_de_la_fenetre(monkeypatch):
+    """Le gestionnaire de fenêtres a pu changer l'état : on lit Qt, pas le
+    dernier état mémorisé."""
+    _settings_with_pin(monkeypatch, maintenance_pin.hash_pin("1234"))
+    client = _client()
+    client.is_fullscreen = False          # mémoire périmée
+    client.window = _FakeWindow(_FakeNative(fullscreen=True))
+    client.request_fullscreen_toggle()
+    assert client.window.toggles == 0
+
+
+def test_echec_de_bascule_ne_change_pas_l_etat(monkeypatch):
+    _settings_with_pin(monkeypatch, "")
+    client = _client()
+    client.window = _FakeWindow(_FakeNative(fullscreen=True),
+                                toggle_fails=True)
+    assert client.toggle_fullscreen() is False
+    assert client.is_fullscreen is True
+
+
+# --- Fermeture sans F10 (Alt+F4, croix) ---------------------------------------------
+
+def test_fermeture_sans_f10_passe_par_la_maintenance():
+    client = _client()
+    client.window = _FakeWindow()
+    # Ne renvoie pas False : la fermeture n'est pas bloquée.
+    assert client._on_window_closing() is None
+    assert client.maintenance_requested
+
+
+def test_fermeture_apres_f10_ne_change_rien():
+    client = _client()
+    client.window = _FakeWindow()
+    client.request_maintenance()
+    assert client._on_window_closing() is None
+    assert client.maintenance_requested
+    assert client.window.destroyed == 1
 
 
 # --- Fermeture de la borne ------------------------------------------------------
@@ -283,9 +388,13 @@ def test_f10_declenche_la_maintenance_avec_le_vrai_qt(monkeypatch):
 
     client = _client()
     client.window = _FakeWindow(native)
-    client._install_maintenance_shortcut()
+    toggles = []
+    monkeypatch.setattr(client, "request_fullscreen_toggle",
+                        lambda: toggles.append("F11"), raising=False)
+    client._install_kiosk_shortcuts()
 
     QTest.keyClick(field, Qt.Key.Key_F11)
+    assert toggles == ["F11"]
     assert not client.maintenance_requested
     QTest.keyClick(field, Qt.Key.Key_F10)
     assert client.maintenance_requested

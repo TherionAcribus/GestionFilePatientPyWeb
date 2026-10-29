@@ -264,7 +264,9 @@ class ConfigEditor(tk.Tk):
                   "quitter l'application. Code PIN facultatif (chiffres "
                   f"uniquement, {maintenance_pin.PIN_MIN_LENGTH} à "
                   f"{maintenance_pin.PIN_MAX_LENGTH}) ; laissez les champs "
-                  "vides pour ne rien changer."),
+                  "vides pour ne rien changer. Avec un code PIN, la touche "
+                  f"{maintenance_pin.FULLSCREEN_KEY} ne fait plus sortir du "
+                  "plein écran."),
             wraplength=540, justify="left",
         ).grid(row=row, column=0, columnspan=3, padx=5, pady=(0, 4), sticky="w")
         row += 1
@@ -755,6 +757,24 @@ def _cancel_pending_callbacks(window):
             window.after_cancel(after_id)
 
 
+def _invoke_focused_or(window, default):
+    """Touche Entrée : active le bouton qui a le focus clavier (atteint par
+    Tab), sinon l'action par défaut ``default``.
+
+    Sans cela, Entrée lancerait toujours l'action par défaut, même sur un
+    autre bouton sélectionné (ex. « Reprendre le service » ouvrait la
+    configuration, « Annuler » validait le code PIN)."""
+    try:
+        focused = window.focus_get()
+    except (KeyError, tk.TclError):
+        # focus_get échoue sur certains widgets internes de Tk.
+        focused = None
+    if isinstance(focused, (tk.Button, ttk.Button)):
+        focused.invoke()
+    else:
+        default()
+
+
 def _bring_to_front(window):
     """Fait passer ``window`` au premier plan avec le focus clavier.
 
@@ -801,8 +821,9 @@ class MaintenancePinDialog(tk.Tk):
         ttk.Button(buttons, text="Valider", command=self._submit).pack(
             side=tk.RIGHT, padx=(0, 6))
 
-        self.bind("<Return>", lambda _e: self._submit())
-        self.bind("<KP_Enter>", lambda _e: self._submit())
+        for sequence in ("<Return>", "<KP_Enter>"):
+            self.bind(sequence,
+                      lambda _e: _invoke_focused_or(self, self._submit))
         self.bind("<Escape>", lambda _e: self.destroy())
         self.bind_all("<KeyPress>", self._note_activity, add="+")
 
@@ -917,8 +938,9 @@ class MaintenanceActionDialog(tk.Tk):
                 frame, choice,
                 _choice_style(choice, choice.action == default_action))
 
-        self.bind("<Return>", lambda _e: self._configure())
-        self.bind("<KP_Enter>", lambda _e: self._configure())
+        for sequence in ("<Return>", "<KP_Enter>"):
+            self.bind(sequence,
+                      lambda _e: _invoke_focused_or(self, self._configure))
         self.bind("<Escape>", lambda _e: self.destroy())
         for sequence in ("<KeyPress>", "<ButtonPress>", "<Motion>",
                          "<MouseWheel>"):

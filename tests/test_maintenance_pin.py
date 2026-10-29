@@ -171,3 +171,24 @@ def test_chaque_choix_est_explique():
         assert "teindre" not in choice.label + choice.description
     quit_choice = maintenance_pin.MAINTENANCE_CHOICES[-1]
     assert "Le PC reste allumé" in quit_choice.description
+
+
+# --- Touche plein écran (F11) et code PIN ------------------------------------
+
+
+def test_f11_libre_sans_pin():
+    assert maintenance_pin.fullscreen_toggle_allowed(True, "")
+    assert maintenance_pin.fullscreen_toggle_allowed(False, "")
+
+
+def test_f11_ne_sort_pas_du_plein_ecran_avec_pin():
+    stored = maintenance_pin.hash_pin("2468")
+    assert not maintenance_pin.fullscreen_toggle_allowed(True, stored)
+    # Revenir en plein écran reste toujours permis.
+    assert maintenance_pin.fullscreen_toggle_allowed(False, stored)
+
+
+def test_f11_empreinte_illisible_ne_bloque_pas():
+    # Même règle que l'accès maintenance (pin_required) : une empreinte
+    # illisible est déjà refusée au démarrage par la validation.
+    assert maintenance_pin.fullscreen_toggle_allowed(True, "abimé")

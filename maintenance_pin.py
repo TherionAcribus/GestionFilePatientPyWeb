@@ -57,7 +57,7 @@ MAINTENANCE_CHOICES = (
         "de la configuration."),
     MaintenanceChoice(
         MAINTENANCE_ACTION_RESUME, "Reprendre le service",
-        "La borne redémarre et revient à l'accueil des patients."),
+        "Ferme cette fenêtre : la borne reprend aussitôt, sans redémarrer."),
     MaintenanceChoice(
         MAINTENANCE_ACTION_QUIT, "Quitter l'application",
         "Ferme la borne sans la relancer. Le PC reste allumé.",
@@ -83,6 +83,45 @@ def quit_confirmation_text(shortcuts_supported: bool) -> str:
             "d'elle-même. Le PC reste allumé.\n\n"
             f"{relaunch}\n\n"
             "Quitter l'application ?")
+
+
+def maintenance_intro_text(timeout_s: int) -> str:
+    """Phrase d'en-tête du menu de maintenance."""
+    return ("La borne est en pause tant que cette fenêtre est ouverte. Sans "
+            f"réponse d'ici {timeout_s} s, elle reprend son service "
+            "d'elle-même.")
+
+
+#: Codes envoyés au serveur quand la borne s'arrête volontairement : sans
+#: eux, elle y passerait pour injoignable (alerte au comptoir). Le serveur
+#: connaît ces deux codes (``models.KIOSK_MAINTENANCE_CODE`` et
+#: ``KIOSK_STOPPED_CODE``).
+SERVER_EVENT_MAINTENANCE = "kiosk_maintenance"
+SERVER_EVENT_STOPPED = "kiosk_stopped"
+#: Code d'alerte : trop de codes PIN incorrects.
+SERVER_EVENT_PIN_LOCKOUT = "kiosk_pin_lockout"
+
+
+def shutdown_server_event(action) -> tuple[str, str]:
+    """``(code, message)`` annoncé au serveur quand la fenêtre de la borne
+    se ferme pour la maintenance, selon l'action choisie (None : fenêtre
+    fermée autrement, la borne redémarre sur le menu de maintenance)."""
+    if action == MAINTENANCE_ACTION_QUIT:
+        return (SERVER_EVENT_STOPPED,
+                "Application de la borne quittée depuis le menu de "
+                "maintenance.")
+    if action == MAINTENANCE_ACTION_CONFIGURE:
+        return (SERVER_EVENT_MAINTENANCE,
+                "Borne arrêtée pour configuration (menu de maintenance).")
+    return (SERVER_EVENT_MAINTENANCE,
+            "Fenêtre de la borne fermée : redémarrage sur le menu de "
+            "maintenance.")
+
+
+def pin_lockout_message(failures: int, wait_text: str) -> str:
+    """Message d'alerte envoyé au serveur lors d'une attente imposée."""
+    return (f"Code PIN de maintenance incorrect {failures} fois de suite sur "
+            f"la borne : nouvel essai possible dans {wait_text}.")
 
 
 PIN_MIN_LENGTH = 4

@@ -169,33 +169,53 @@ invalide) — aucune connaissance du chemin n'est nécessaire.
 ### 4.3 Touches de maintenance (F10) et de plein écran (F11)
 
 Sur une borne **en service**, la touche **F10** d'un clavier branché ouvre la
-maintenance sans terminal ni redémarrage manuel :
+maintenance sans terminal ni redémarrage manuel. Le code PIN et le menu
+s'affichent **par-dessus la borne**, qui reste ouverte derrière, en pause
+(elle ne répond plus au toucher tant que la fenêtre est ouverte) : le
+public ne voit jamais le bureau du PC, et un appui par erreur ne coupe
+rien.
 
-1. la fenêtre kiosque se ferme ;
-2. si un **code PIN de maintenance** est défini, il est demandé (abandon
+1. si un **code PIN de maintenance** est défini, il est demandé (abandon
    après 60 s sans saisie ; erreurs limitées, voir plus bas) ;
-3. une fenêtre propose alors trois suites, en grands boutons empilés
+2. une fenêtre propose alors trois suites, en grands boutons empilés
    utilisables au doigt, chacun suivi d'une phrase d'explication :
    - **Ouvrir la configuration** (en bleu, choix par défaut, touche Entrée) :
-     l'éditeur s'ouvre et, à sa fermeture — enregistrée ou non — **la borne
-     redémarre d'elle-même** avec la configuration en vigueur ;
-   - **Reprendre le service** (Échap, ou 60 s sans réponse) : la borne
-     redémarre telle quelle ;
+     la borne se ferme et l'éditeur s'ouvre devant un fond plein écran
+     « Borne momentanément indisponible ». À sa fermeture — enregistrée ou
+     non — **la borne redémarre d'elle-même** avec la configuration en
+     vigueur ;
+   - **Reprendre le service** (Échap, ou 60 s sans réponse) : la fenêtre se
+     ferme et la borne reprend aussitôt, **sans redémarrer** ;
    - **Quitter l'application** (en rouge, à part en bas) : après
      confirmation, l'application borne se ferme et **ne redémarre pas** (le
      PC, lui, reste allumé). Pour la relancer : « Flowelis Borne » dans le
      menu des applications, ou redémarrage du PC (lancement automatique à
      l'ouverture de session).
 
+Code refusé ou annulé : la borne continue simplement son service.
+
+**Ticket en cours** : si un ticket est en train de sortir quand la borne se
+ferme (configuration, « Quitter », Alt+F4), la fermeture attend la fin de
+l'impression et que la page ait noté le résultat (au plus 30 s). Le patient
+ne repart pas avec un ticket coupé ou absent de la file.
+
+**Serveur prévenu** : juste avant de se fermer pour la configuration ou sur
+« Quitter l'application », la borne l'annonce au serveur. Dans l'admin
+(page « Bornes »), elle apparaît alors **« En maintenance »** ou
+**« Arrêtée »** au lieu de « Injoignable », sans alerte au comptoir. Une
+maintenance n'explique le silence que 30 min : au-delà, la borne redevient
+« Injoignable ». Trop de codes PIN incorrects sont aussi signalés dans le
+journal des évènements.
+
 Les touches F10 et F11 fonctionnent sur tous les écrans : page patient,
 « Borne hors ligne » et « Configuration invalide ». Un éditeur oublié ouvert
 se ferme sans enregistrer après **10 minutes** sans clavier ni souris, et la
 borne reprend son service.
 
-**Toute fermeture de la fenêtre** (Alt+F4, croix de la fenêtre hors plein
-écran…) suit le même chemin que F10 : code PIN éventuel puis menu de
-maintenance. La borne ne reste donc jamais arrêtée par mégarde : seul le
-choix « Quitter l'application » l'arrête.
+**Toute autre fermeture de la fenêtre** (Alt+F4, croix de la fenêtre hors
+plein écran…) relance aussitôt la borne, menu de maintenance ouvert : code
+PIN éventuel puis mêmes choix que F10. La borne ne reste donc jamais
+arrêtée par mégarde : seul le choix « Quitter l'application » l'arrête.
 
 Dans le menu et la fenêtre du code PIN, **Entrée active le bouton
 sélectionné** (Tab pour changer de bouton) ; sans sélection, Entrée ouvre la

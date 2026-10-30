@@ -111,10 +111,11 @@ Sans console ni paramètre, le lancement produit l'interface kiosque. Au
 premier lancement, l'**assistant d'installation** s'ouvre d'abord (relançable
 avec `--setup`) ; si la configuration reste refusée, l'éditeur graphique
 s'ouvre.
-Borne en service : la touche **F10** (clavier branché) ferme le kiosque,
-ouvre la configuration (après le code PIN s'il est défini) puis relance le
-binaire — voir README §4.3 (Alt+F4 et la croix de la fenêtre passent par
-le même menu ; F11 ne quitte pas le plein écran si un code PIN est défini).
+Borne en service : la touche **F10** (clavier branché) ouvre le menu de
+maintenance par-dessus le kiosque (après le code PIN s'il est défini) ;
+« Ouvrir la configuration » ferme le kiosque puis relance le binaire — voir
+README §4.3 (Alt+F4 et la croix de la fenêtre relancent la borne sur ce
+menu ; F11 ne quitte pas le plein écran si un code PIN est défini).
 
 `install.sh` reste la voie la plus simple pour ces réglages système ; le
 binaire compilé ne dispense que de l'environnement Python/venv.

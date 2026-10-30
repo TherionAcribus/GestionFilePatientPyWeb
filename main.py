@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 import random
@@ -74,6 +75,17 @@ LINK_PROBE_MISSES = 2        # échecs consécutifs avant de déclarer la coupur
 # depuis une borne en service se ferme seul après ce délai sans clavier ni
 # souris, pour que la borne ne reste pas hors service si on l'oublie.
 MAINTENANCE_EDITOR_IDLE_TIMEOUT_S = 10 * 60
+
+# Fermeture de la borne pour la maintenance pendant un ticket : attente
+# maximale de la fin de l'impression (et de l'enregistrement de son
+# acquittement par la page) avant de fermer quand même.
+MAINTENANCE_PRINT_WAIT_S = 30
+
+# Option de relance : la borne redémarre avec le menu de maintenance ouvert
+# (fenêtre fermée par Alt+F4 ou sa croix, sans passer par F10).
+MAINTENANCE_OPTION = "--maintenance"
+# Délai avant d'ouvrir ce menu : la fenêtre de la borne s'affiche d'abord.
+MAINTENANCE_AT_START_DELAY_MS = 1500
 
 
 def _jittered_init_delay(delay):
@@ -177,9 +189,16 @@ class WebViewClient:
         self._link_probe_thread = None
         self._link_alive = True
         self._link_misses = 0
-        # Touche de maintenance pressée : la fenêtre se ferme et __main__
-        # enchaîne sur la configuration puis relance la borne.
+        # Fermeture de la fenêtre pour la maintenance : __main__ enchaîne
+        # alors sur ``maintenance_action`` (configuration, fermeture de
+        # l'application, ou None : fenêtre fermée hors menu).
         self.maintenance_requested = False
+        self.maintenance_action = None
+        # Code PIN / menu de maintenance affichés par-dessus la borne.
+        self._maintenance_gate = None
+        # Ouvrir ce menu dès l'affichage (relance avec MAINTENANCE_OPTION).
+        self.open_maintenance_on_start = False
+        self._close_thread = None
         # Cause probable d'une initialisation qui échoue, affichée au
         # technicien sur l'écran « Borne hors ligne » (startup_diagnosis).
         self._diagnosis_tracker = DiagnosisTracker()
@@ -970,7 +989,7 @@ class WebViewClient:
         pywebview exécute dans le fil Qt — condition pour créer un objet Qt
         rattaché à la fenêtre."""
         try:
-            from PySide6.QtCore import Qt
+            from PySide6.QtCore import Qt, QTimer
             from PySide6.QtGui import QKeySequence, QShortcut
         except ImportError:
             logger.warning("Touches F10/F11 indisponibles (Qt absent).")
@@ -1000,41 +1019,123 @@ class WebViewClient:
         logger.info("Touche de maintenance : %s ; plein écran : %s.",
                     maintenance_pin.MAINTENANCE_KEY,
                     maintenance_pin.FULLSCREEN_KEY)
+        if self.open_maintenance_on_start:
+            # Relance après une fermeture hors menu (Alt+F4…) : le menu de
+            # maintenance s'ouvre par-dessus la borne une fois affichée.
+            QTimer.singleShot(MAINTENANCE_AT_START_DELAY_MS,
+                              self.request_maintenance)
 
     def _on_window_closing(self):
         """La fenêtre kiosque va se fermer.
 
-        Hors touche de maintenance (Alt+F4, croix de la fenêtre une fois
-        sortie du plein écran…), la fermeture passe quand même par la
-        maintenance : code PIN éventuel, puis choix — et la borne repart si
-        personne ne choisit « Quitter l'application ». Sans cela, la borne
-        restait arrêtée jusqu'au prochain démarrage du PC. La fermeture
-        elle-même n'est pas bloquée (renvoyer False l'annulerait)."""
+        Hors menu de maintenance (Alt+F4, croix de la fenêtre une fois
+        sortie du plein écran…), la borne redémarre aussitôt avec le menu de
+        maintenance ouvert : code PIN éventuel, puis choix — elle reprend si
+        personne ne choisit « Quitter l'application ». La fermeture n'est
+        retardée que si un ticket est en train de sortir (renvoyer False
+        l'annule) : elle se fait juste après."""
         if self.maintenance_requested:
-            return
+            return None
+        if self.printer_api.printing():
+            logger.warning("Fermeture de la fenêtre pendant une impression : "
+                           "elle attend la fin du ticket.")
+            self.close_for_maintenance(None)
+            return False
         self.maintenance_requested = True
-        logger.warning("Fenêtre de la borne fermée sans la touche de "
-                       "maintenance (Alt+F4, croix…) : passage par la "
+        logger.warning("Fenêtre de la borne fermée hors menu de maintenance "
+                       "(Alt+F4, croix…) : relance sur le menu de "
                        "maintenance.")
+        return None
 
     def request_maintenance(self):
-        """Touche de maintenance pressée : ferme la fenêtre kiosque.
+        """Touche de maintenance : code PIN éventuel puis menu, affichés
+        PAR-DESSUS la borne, qui reste ouverte (``maintenance_gate``).
 
-        La suite (code PIN, choix maintenance, éditeur, relance ou
-        fermeture de l'application) se fait APRÈS la boucle Qt, dans
-        ``__main__`` : Tk et Qt ne cohabitent pas dans une même boucle, et une
-        borne relancée repart d'une configuration relue proprement."""
+        Seuls « Ouvrir la configuration » et « Quitter l'application »
+        ferment la borne ; un appui par erreur, un code refusé ou « Reprendre
+        le service » la laissent tourner sans redémarrage. Appelé dans le
+        fil Qt (raccourci)."""
+        if self.maintenance_requested or self._maintenance_gate is not None:
+            return
+        native = getattr(self.window, "native", None)
+        logger.info("Touche de maintenance pressée : ouverture du menu de "
+                    "maintenance.")
+        try:
+            import maintenance_gate
+            gate = maintenance_gate.MaintenanceGate(
+                native, Config().settings.maintenance_pin_hash,
+                on_done=self._on_maintenance_choice,
+                state_path=_pin_state_path(),
+                on_lockout=self._report_pin_lockout)
+            self._maintenance_gate = gate
+            gate.start()
+        except Exception:
+            # FRONTIÈRE Qt : sans menu, la borne continue son service.
+            logger.exception("Menu de maintenance impossible à afficher.")
+            self._maintenance_gate = None
+
+    def _on_maintenance_choice(self, action):
+        """Fin du menu de maintenance (fil Qt)."""
+        self._maintenance_gate = None
+        if action in (maintenance_pin.MAINTENANCE_ACTION_CONFIGURE,
+                      maintenance_pin.MAINTENANCE_ACTION_QUIT):
+            self.close_for_maintenance(action)
+        elif action == maintenance_pin.MAINTENANCE_ACTION_RESUME:
+            logger.info("Reprise du service demandée (menu de maintenance).")
+        else:
+            logger.info("Menu de maintenance fermé : la borne continue.")
+
+    def _report_pin_lockout(self, failures, wait_s):
+        """Trop de codes PIN faux : alerte dans le journal du serveur."""
+        self.printer_api.report_event(
+            maintenance_pin.SERVER_EVENT_PIN_LOCKOUT,
+            maintenance_pin.pin_lockout_message(
+                failures, pin_lockout.format_wait(wait_s)),
+            is_error=True)
+
+    def close_for_maintenance(self, action):
+        """Ferme la fenêtre de la borne pour ``action`` (configuration,
+        fermeture de l'application, ou None : fenêtre fermée hors menu).
+
+        Un ticket en train de sortir n'est jamais coupé : la fenêtre attend
+        la fin de l'impression et l'enregistrement de son acquittement par
+        la page (au plus ``MAINTENANCE_PRINT_WAIT_S``), sans quoi le
+        patient repartirait avec un ticket absent de la file. L'attente se
+        fait hors du fil Qt, qui doit rendre le résultat de l'impression à
+        la page ; la borne ne répond plus au toucher pendant ce temps.
+
+        La suite (éditeur, relance) se fait APRÈS la boucle Qt, dans
+        ``__main__`` : Tk et Qt ne cohabitent pas dans une même boucle, et
+        une borne relancée repart d'une configuration relue proprement."""
         if self.maintenance_requested:
             return
         self.maintenance_requested = True
-        logger.info("Touche de maintenance pressée : fermeture de la borne "
-                    "pour configuration.")
+        self.maintenance_action = action
+        native = getattr(self.window, "native", None)
+        with contextlib.suppress(Exception):
+            native.setEnabled(False)
+        self._close_thread = threading.Thread(
+            target=self._close_when_idle, name="fermeture-maintenance",
+            daemon=True)
+        self._close_thread.start()
+
+    def _close_when_idle(self):
+        if not self.printer_api.wait_until_idle(MAINTENANCE_PRINT_WAIT_S):
+            logger.warning("Impression toujours en cours après %s s : "
+                           "fermeture de la borne quand même.",
+                           MAINTENANCE_PRINT_WAIT_S)
+        logger.info("Fermeture de la borne pour la maintenance (%s).",
+                    self.maintenance_action or "relance sur le menu")
         try:
             self.window.destroy()
         except Exception:
             logger.exception("Fermeture de la fenêtre pour maintenance "
                              "impossible.")
             self.maintenance_requested = False
+            self.maintenance_action = None
+            native = getattr(self.window, "native", None)
+            with contextlib.suppress(Exception):
+                native.setEnabled(True)
 
     def _on_window_shown(self):
         """La fenêtre est affichée (boucle GUI démarrée) : on marque la fenêtre
@@ -1091,6 +1192,8 @@ class WebViewClient:
         de fermeture, sans PIN. Il faut alors passer par F10, puis décocher
         « Plein écran » dans la configuration. Revenir en plein écran reste
         toujours permis."""
+        if self._maintenance_gate is not None or self.maintenance_requested:
+            return
         fullscreen = self._fullscreen_now()
         if not maintenance_pin.fullscreen_toggle_allowed(
                 fullscreen, Config().settings.maintenance_pin_hash):
@@ -1176,7 +1279,12 @@ class WebViewClient:
             join_with_timeout(
                 getattr(self, '_link_probe_thread', None), "sonde de liaison")
             if self.printer:
-                self.printer.cleanup()
+                # Arrêt volontaire : le serveur l'affiche comme tel au lieu
+                # de « injoignable » (alerte au comptoir).
+                self.printer.cleanup(
+                    final_event=maintenance_pin.shutdown_server_event(
+                        self.maintenance_action)
+                    if self.maintenance_requested else None)
 
 
 def _launch_config_editor(**editor_options):
@@ -1186,7 +1294,7 @@ def _launch_config_editor(**editor_options):
     l'utilise que pour se configurer, et une absence de Tk doit seulement
     priver la borne de l'éditeur — pas l'empêcher de démarrer.
     ``editor_options`` est transmis à ``ConfigEditor`` (``kiosk_follows``,
-    ``idle_timeout_s``). Retourne True si l'éditeur s'est exécuté jusqu'au
+    ``idle_timeout_s``, ``backdrop``). Retourne True si l'éditeur s'est exécuté jusqu'au
     bout."""
     try:
         import config_editor
@@ -1235,67 +1343,32 @@ def _pin_state_path():
     return Config().config_path / pin_lockout.STATE_FILENAME
 
 
-def _maintenance_pin_granted(stored_hash):
-    """Demande le code PIN de maintenance s'il y en a un.
+def _after_maintenance_close(action):
+    """La fenêtre de la borne s'est fermée pour la maintenance.
 
-    Sans PIN défini, l'accès est direct (le clavier suffit à écarter les
-    patients). Si la fenêtre du PIN ne peut pas s'afficher, l'accès est
-    refusé : la borne repart simplement en service. Les erreurs sont
-    comptées d'un appui sur F10 à l'autre (``pin_lockout``)."""
-    if not maintenance_pin.pin_required(stored_hash):
-        return True
-    try:
-        import config_editor
-        return config_editor.ask_maintenance_pin(
-            stored_hash, state_path=_pin_state_path())
-    except Exception:
-        # FRONTIÈRE : Tk absent ou en panne — on refuse plutôt que d'ouvrir.
-        logger.exception("Demande du code PIN de maintenance impossible.")
-        return False
-
-
-def _ask_maintenance_action():
-    """Demande la suite à donner (configuration, fermeture ou reprise).
-
-    Renvoie la constante d'action choisie, ou None si la fenêtre n'a pas pu
-    s'afficher ou a été abandonnée — la borne reprend alors son service."""
-    try:
-        import config_editor
-        return config_editor.ask_maintenance_action()
-    except Exception:
-        # FRONTIÈRE : Tk absent ou en panne — on reprend plutôt que laisser
-        # la borne arrêtée sans écran.
-        logger.exception("Fenêtre de choix de maintenance indisponible.")
-        return None
-
-
-def _run_maintenance():
-    """Touche de maintenance : code PIN éventuel, puis action choisie.
-
-    Appelé après la fermeture de la fenêtre kiosque. Renvoie True si la
-    borne doit être relancée — partout sauf après un choix explicite
-    « Quitter l'application »."""
-    if not _maintenance_pin_granted(Config().settings.maintenance_pin_hash):
-        logger.info("Accès maintenance non accordé : relance de la borne.")
-        return True
-    action = _ask_maintenance_action()
+    Renvoie les options de relance de la borne, ou None pour ne pas la
+    relancer (« Quitter l'application »). Le code PIN a déjà été demandé
+    par le menu, par-dessus la borne (``maintenance_gate``)."""
     if action == maintenance_pin.MAINTENANCE_ACTION_QUIT:
-        logger.info("Fermeture de l'application demandée (touche de "
+        logger.info("Fermeture de l'application demandée (menu de "
                     "maintenance) : la borne ne sera pas relancée.")
-        return False
+        return None
     if action == maintenance_pin.MAINTENANCE_ACTION_CONFIGURE:
-        logger.info("Accès maintenance accordé : ouverture de la configuration.")
+        logger.info("Ouverture de la configuration (menu de maintenance).")
         _launch_config_editor(kiosk_follows=True,
-                              idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S)
-    elif action == maintenance_pin.MAINTENANCE_ACTION_RESUME:
-        logger.info("Reprise du service demandée (touche de maintenance).")
-    # Reprise, annulation, inactivité ou fenêtre en panne : la borne reprend.
-    return True
+                              idle_timeout_s=MAINTENANCE_EDITOR_IDLE_TIMEOUT_S,
+                              backdrop=True)
+        return []
+    # Fenêtre fermée hors menu (Alt+F4, croix…) : la borne repart avec le
+    # menu de maintenance ouvert — même code PIN, mêmes choix que F10.
+    return [MAINTENANCE_OPTION]
 
 
 #: Options qui font une action puis quittent, sans lancer la borne.
 _ONE_SHOT_OPTIONS = ("--config", "--setup", "--selfcheck",
                      "--install-shortcuts", "--remove-shortcuts")
+#: Options valables pour UN lancement : jamais reprises à la relance.
+_SINGLE_LAUNCH_OPTIONS = (MAINTENANCE_OPTION,)
 
 
 def _shortcuts_state_path():
@@ -1319,22 +1392,25 @@ def _sync_shortcuts(force=False):
         return []
 
 
-def _restart_command(argv=None, executable=None, frozen=None):
+def _restart_command(argv=None, executable=None, frozen=None, extra=()):
     """Ligne de commande qui relance la borne à l'identique.
 
     Binaire PyInstaller : le binaire lui-même. Depuis les sources : le même
     interpréteur sur ce fichier. Les options de lancement sont conservées,
-    sauf celles qui ne mènent pas à la borne (``_ONE_SHOT_OPTIONS``)."""
+    sauf celles qui ne mènent pas à la borne (``_ONE_SHOT_OPTIONS``) ou ne
+    valent que pour un lancement (``_SINGLE_LAUNCH_OPTIONS``) ; ``extra``
+    est ajouté à la fin."""
     argv = sys.argv if argv is None else argv
     executable = sys.executable if executable is None else executable
     frozen = getattr(sys, "frozen", False) if frozen is None else frozen
-    options = [a for a in argv[1:] if a not in _ONE_SHOT_OPTIONS]
+    dropped = _ONE_SHOT_OPTIONS + _SINGLE_LAUNCH_OPTIONS
+    options = [a for a in argv[1:] if a not in dropped] + list(extra)
     if frozen:
         return [executable, *options]
     return [executable, os.path.abspath(__file__), *options]
 
 
-def _restart_kiosk():
+def _restart_kiosk(extra=()):
     """Relance la borne dans un processus neuf (configuration relue, Qt
     réinitialisé) — plus sûr que de redémarrer Qt WebEngine dans ce processus.
 
@@ -1343,7 +1419,7 @@ def _restart_kiosk():
     donc le nouveau puis on sort. Binaire PyInstaller « onefile » :
     ``PYINSTALLER_RESET_ENVIRONMENT`` fait repartir le binaire comme un
     lancement neuf au lieu de réutiliser le dossier extrait de celui-ci."""
-    command = _restart_command()
+    command = _restart_command(extra=extra)
     env = dict(os.environ)
     if getattr(sys, "frozen", False):
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
@@ -1407,7 +1483,8 @@ def _selfcheck():
     for module in ('webview.platforms.qt', 'PySide6.QtWebEngineWidgets',
                    'escpos.printer', 'usb.core',
                    'keyring.backends.SecretService', 'keyring.backends.chainer',
-                   'tkinter', 'config_editor', 'setup_wizard'):
+                   'tkinter', 'config_editor', 'setup_wizard',
+                   'maintenance_gate'):
         try:
             importlib.import_module(module)
         except Exception as exc:  # tout rapporter : c'est un diagnostic
@@ -1467,11 +1544,14 @@ if __name__ == '__main__':
         _sync_shortcuts()
 
     client = _prepare_client()
+    client.open_maintenance_on_start = MAINTENANCE_OPTION in sys.argv
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()
 
-    # Touche de maintenance : la fenêtre s'est fermée pour laisser place à la
-    # maintenance ; la borne est relancée sauf si « Quitter l'application »
-    # a été choisi (_restart_kiosk ne revient pas — il termine le processus).
-    if client.maintenance_requested and _run_maintenance():
-        _restart_kiosk()
+    # Fenêtre fermée pour la maintenance : configuration éventuelle, puis
+    # relance — sauf après « Quitter l'application » (_restart_kiosk ne
+    # revient pas : il termine le processus).
+    if client.maintenance_requested:
+        restart_options = _after_maintenance_close(client.maintenance_action)
+        if restart_options is not None:
+            _restart_kiosk(restart_options)

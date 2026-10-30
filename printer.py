@@ -127,6 +127,12 @@ class PrinterAPI:
         # initialisée — avant cela, aucun thread de statut n'existe pour
         # porter l'envoi.
         self._event_reporter = None
+        # Impressions en cours (appels du pont JS pas encore revenus) : la
+        # fenêtre ne se ferme pas tant qu'un ticket sort (voir
+        # ``wait_until_idle``).
+        self._jobs = threading.Condition()
+        self._jobs_in_flight = 0
+        self._last_job_end = None
 
     def set_print_callback(self, callback):
         """Définit la fonction de callback pour l'impression"""
@@ -165,6 +171,38 @@ class PrinterAPI:
         JS (bandeau « imprimante indisponible » adressé par borne)."""
         return self._borne_id
 
+    def printing(self):
+        """Un ticket est-il en cours d'impression ?"""
+        with self._jobs:
+            return self._jobs_in_flight > 0
+
+    def wait_until_idle(self, timeout, settle_s=None, clock=time.monotonic):
+        """Attend qu'aucun ticket ne soit en cours, au plus ``timeout`` s.
+
+        Après le dernier ticket, ``settle_s`` secondes de plus laissent à la
+        page le temps de noter le résultat (file d'acquittements en
+        ``localStorage``) : fermée trop tôt, elle perdrait l'acquittement et
+        le patient repartirait avec un ticket absent de la file. Renvoie
+        False si le délai est dépassé — la fermeture se fait quand même.
+        Bloquant : jamais depuis le fil Qt, qui doit rendre le résultat
+        de l'impression à la page."""
+        settle_s = PRINT_SETTLE_S if settle_s is None else settle_s
+        deadline = clock() + timeout
+        with self._jobs:
+            while True:
+                now = clock()
+                if self._jobs_in_flight:
+                    wait = deadline - now
+                elif (self._last_job_end is not None
+                        and now - self._last_job_end < settle_s):
+                    wait = min(deadline - now,
+                               settle_s - (now - self._last_job_end))
+                else:
+                    return True
+                if wait <= 0:
+                    return False
+                self._jobs.wait(wait)
+
     def print_ticket(self, print_data, print_job_id=None):
         """Méthode exposée à JavaScript pour l'impression.
 
@@ -181,6 +219,17 @@ class PrinterAPI:
         que garantir le même format pour les erreurs propres à l'API et
         joindre l'identifiant de la borne.
         """
+        with self._jobs:
+            self._jobs_in_flight += 1
+        try:
+            return self._print_ticket(print_data, print_job_id)
+        finally:
+            with self._jobs:
+                self._jobs_in_flight -= 1
+                self._last_job_end = time.monotonic()
+                self._jobs.notify_all()
+
+    def _print_ticket(self, print_data, print_job_id):
         if self._print_callback:
             try:
                 result = self._print_callback(print_data, print_job_id)
@@ -222,6 +271,9 @@ class PrinterAPI:
 # Sans timeout, un serveur injoignable ou lent bloque le thread appelant
 # indéfiniment.
 NETWORK_TIMEOUT = (5, 10)
+# Dernier statut envoyé à la fermeture (maintenance) : court, la fermeture
+# ne doit pas traîner si le serveur ne répond pas.
+FINAL_STATUS_TIMEOUT = (3, 3)
 
 # Intervalle (secondes) entre deux passages du gestionnaire de santé de
 # l'imprimante : tant qu'elle n'est pas connectée (absente au démarrage ou
@@ -253,6 +305,10 @@ THREAD_JOIN_TIMEOUT = 5
 # opération matérielle bloquée ne doit plus empêcher indéfiniment une
 # impression suivante ou la fermeture de la borne.
 USB_LOCK_TIMEOUT = 10.0
+
+# Fermeture de la fenêtre (maintenance) pendant un ticket : délai laissé à la
+# page, après le dernier ticket, pour enregistrer son acquittement.
+PRINT_SETTLE_S = 2.0
 
 
 def join_with_timeout(thread, label, timeout=None):
@@ -411,6 +467,26 @@ class PrinterStatusThread(threading.Thread):
 
     def stop(self):
         self._stop_event.set()
+
+    def send_once(self, status_data, timeout=FINAL_STATUS_TIMEOUT):
+        """Envoi unique et SYNCHRONE, hors file (dernier message avant la
+        fermeture de la borne) ; True si le serveur l'a accepté.
+
+        Connexion neuve plutôt que la session du thread : celle-ci est
+        fermée à l'arrêt du thread."""
+        with self._headers_lock:
+            headers = dict(self._headers)
+        try:
+            response = requests.post(self.url, json=status_data,
+                                     headers=headers, timeout=timeout)
+        except RequestException as e:
+            status_logger.warning("Dernier statut non envoyé : %s", e)
+            return False
+        if 200 <= response.status_code < 300:
+            return True
+        status_logger.warning("Dernier statut refusé par le serveur (HTTP %s)",
+                              response.status_code)
+        return False
 
     def _drain_latest(self):
         """Vide la file et renvoie le statut le plus récent (ou None). Un statut
@@ -1001,8 +1077,13 @@ class Printer:
             'Content-Type': 'application/json'
         })
 
-    def cleanup(self):
+    def cleanup(self, final_event=None):
         """À appeler lors de la fermeture de l'application.
+
+        ``final_event`` : ``(code, message)`` envoyé au serveur en dernier,
+        après l'arrêt du thread de statut — il explique le silence qui suit
+        (borne en configuration, application quittée) au lieu de la laisser
+        passer pour injoignable.
 
         Tous les ``join()`` sont BORNÉS (``THREAD_JOIN_TIMEOUT``) : un thread
         bloqué (envoi de statut au timeout réseau maximal, USB qui ne répond
@@ -1026,6 +1107,13 @@ class Printer:
         if self.status_thread:
             self.status_thread.stop()
             join_with_timeout(self.status_thread, "statut imprimante")
+            if final_event is not None:
+                code, message = final_event
+                item = self._status_item(code, message)
+                item["is_error"] = False
+                if self.status_thread.send_once(item):
+                    logger.info("Serveur prévenu de l'arrêt de la borne (%s).",
+                                code)
 
 
     def check_paper_status(self):

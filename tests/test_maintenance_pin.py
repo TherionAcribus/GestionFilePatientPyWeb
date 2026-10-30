@@ -192,3 +192,52 @@ def test_f11_empreinte_illisible_ne_bloque_pas():
     # Même règle que l'accès maintenance (pin_required) : une empreinte
     # illisible est déjà refusée au démarrage par la validation.
     assert maintenance_pin.fullscreen_toggle_allowed(True, "abimé")
+
+
+def test_reprendre_ne_redemarre_plus_la_borne():
+    """Le menu s'affiche par-dessus la borne : « Reprendre » la laisse
+    tourner, sans relance."""
+    resume = next(c for c in maintenance_pin.MAINTENANCE_CHOICES
+                  if c.action == maintenance_pin.MAINTENANCE_ACTION_RESUME)
+    assert "sans redémarrer" in resume.description
+
+
+def test_texte_d_accueil_du_menu():
+    text = maintenance_pin.maintenance_intro_text(60)
+    assert "60 s" in text and "en pause" in text
+
+
+# --- Messages au serveur ------------------------------------------------------------
+
+
+def test_quitter_annonce_un_arret_volontaire():
+    code, message = maintenance_pin.shutdown_server_event(
+        maintenance_pin.MAINTENANCE_ACTION_QUIT)
+    assert code == "kiosk_stopped"
+    assert "quittée" in message
+
+
+def test_configuration_annonce_une_maintenance():
+    code, _message = maintenance_pin.shutdown_server_event(
+        maintenance_pin.MAINTENANCE_ACTION_CONFIGURE)
+    assert code == "kiosk_maintenance"
+
+
+def test_fermeture_hors_menu_annonce_une_maintenance():
+    code, message = maintenance_pin.shutdown_server_event(None)
+    assert code == "kiosk_maintenance"
+    assert "redémarrage" in message
+
+
+def test_codes_reconnus_par_le_serveur():
+    """Préfixe kiosk_ : le serveur les journalise sans en faire l'état de
+    l'imprimante. Longueur ≤ 40 (colonne error_code)."""
+    for code in (maintenance_pin.SERVER_EVENT_MAINTENANCE,
+                 maintenance_pin.SERVER_EVENT_STOPPED,
+                 maintenance_pin.SERVER_EVENT_PIN_LOCKOUT):
+        assert code.startswith("kiosk_") and len(code) <= 40
+
+
+def test_alerte_codes_pin_sans_le_code():
+    message = maintenance_pin.pin_lockout_message(4, "1 min")
+    assert "4 fois" in message and "1 min" in message

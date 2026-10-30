@@ -25,15 +25,19 @@ MAINTENANCE_KEY = "F10"
 #: Touche qui bascule la borne entre plein écran et fenêtre (technicien).
 FULLSCREEN_KEY = "F11"
 
-#: Actions proposées par la fenêtre de maintenance (config_editor.
-#: MaintenanceActionDialog) après la touche de maintenance ; définies ici
-#: pour être partagées avec ``main`` sans importer tkinter. Toute autre
-#: issue (annulation, inactivité, fenêtre en panne) fait repartir la borne.
+#: Actions proposées par le menu de maintenance (maintenance_gate.
+#: ActionDialog) après la touche de maintenance ; définies ici pour être
+#: partagées avec ``main`` sans importer Qt. Toute autre issue (annulation,
+#: inactivité, fenêtre en panne) laisse la borne en service.
 MAINTENANCE_ACTION_CONFIGURE = "configure"
-#: Reprendre le service : même effet qu'une annulation (la borne redémarre).
+#: Reprendre le service : même effet qu'une annulation.
 MAINTENANCE_ACTION_RESUME = "resume"
 #: Fermer l'application borne sans la relancer. Le PC, lui, reste allumé.
 MAINTENANCE_ACTION_QUIT = "quit"
+#: Fermer l'application puis éteindre le PC.
+MAINTENANCE_ACTION_POWEROFF = "poweroff"
+#: Actions qui arrêtent la borne sans la relancer (confirmation demandée).
+STOPPING_ACTIONS = (MAINTENANCE_ACTION_QUIT, MAINTENANCE_ACTION_POWEROFF)
 
 
 @dataclass(frozen=True)
@@ -47,9 +51,10 @@ class MaintenanceChoice:
 
 
 #: Boutons de la fenêtre de maintenance, de haut en bas. Le choix par défaut
-#: (Entrée) est en tête ; l'action qui arrête la borne est en dernier,
-#: séparée des autres, pour qu'un tap mal placé sur l'écran tactile ne tombe
-#: pas dessus.
+#: (Entrée) est en tête ; les actions qui arrêtent la borne sont en dernier,
+#: séparées des autres, pour qu'un tap mal placé sur l'écran tactile ne tombe
+#: pas dessus. « Éteindre le PC » n'est proposé que si le système sait le
+#: faire (``maintenance_choices``).
 MAINTENANCE_CHOICES = (
     MaintenanceChoice(
         MAINTENANCE_ACTION_CONFIGURE, "Ouvrir la configuration",
@@ -62,7 +67,36 @@ MAINTENANCE_CHOICES = (
         MAINTENANCE_ACTION_QUIT, "Quitter l'application",
         "Ferme la borne sans la relancer. Le PC reste allumé.",
         danger=True),
+    MaintenanceChoice(
+        MAINTENANCE_ACTION_POWEROFF, "Éteindre le PC",
+        "Ferme la borne puis éteint le PC. Pour la rallumer : bouton "
+        "d'alimentation du PC.",
+        danger=True),
 )
+
+
+def maintenance_choices(poweroff_supported: bool) -> tuple:
+    """Boutons du menu ; sans extinction possible sur ce système, « Éteindre
+    le PC » n'est pas proposé."""
+    return tuple(c for c in MAINTENANCE_CHOICES
+                 if poweroff_supported
+                 or c.action != MAINTENANCE_ACTION_POWEROFF)
+
+
+def poweroff_confirmation_text() -> str:
+    """Texte de confirmation de « Éteindre le PC »."""
+    return ("L'application borne va se fermer, puis le PC va s'éteindre.\n\n"
+            "Pour rallumer la borne : appuyez sur le bouton d'alimentation du "
+            "PC (elle se lance d'elle-même au démarrage).\n\n"
+            "Éteindre le PC ?")
+
+
+def poweroff_failed_text() -> str:
+    """Message affiché si le système refuse l'extinction."""
+    return ("Le système a refusé d'éteindre le PC (droits insuffisants ?). "
+            "La borne va redémarrer.\n\n"
+            "Pour l'éteindre : menu du système, ou bouton d'alimentation du "
+            "PC.")
 
 
 def quit_confirmation_text(shortcuts_supported: bool) -> str:
@@ -110,6 +144,9 @@ def shutdown_server_event(action) -> tuple[str, str]:
         return (SERVER_EVENT_STOPPED,
                 "Application de la borne quittée depuis le menu de "
                 "maintenance.")
+    if action == MAINTENANCE_ACTION_POWEROFF:
+        return (SERVER_EVENT_STOPPED,
+                "Borne éteinte (PC arrêté) depuis le menu de maintenance.")
     if action == MAINTENANCE_ACTION_CONFIGURE:
         return (SERVER_EVENT_MAINTENANCE,
                 "Borne arrêtée pour configuration (menu de maintenance).")

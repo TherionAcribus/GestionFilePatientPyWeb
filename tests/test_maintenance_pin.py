@@ -152,25 +152,51 @@ def test_quitter_sans_raccourci_ne_promet_pas_de_menu():
 
 
 def test_choix_de_maintenance_dans_l_ordre():
-    """Défaut (Entrée) en tête ; l'action qui arrête la borne en dernier."""
+    """Défaut (Entrée) en tête ; les actions qui arrêtent la borne en
+    dernier."""
     actions = [c.action for c in maintenance_pin.MAINTENANCE_CHOICES]
     assert actions == [maintenance_pin.MAINTENANCE_ACTION_CONFIGURE,
                        maintenance_pin.MAINTENANCE_ACTION_RESUME,
-                       maintenance_pin.MAINTENANCE_ACTION_QUIT]
+                       maintenance_pin.MAINTENANCE_ACTION_QUIT,
+                       maintenance_pin.MAINTENANCE_ACTION_POWEROFF]
 
 
-def test_seul_quitter_est_dangereux():
+def test_seules_les_actions_d_arret_sont_dangereuses():
     dangerous = [c.action for c in maintenance_pin.MAINTENANCE_CHOICES
                  if c.danger]
-    assert dangerous == [maintenance_pin.MAINTENANCE_ACTION_QUIT]
+    assert tuple(dangerous) == maintenance_pin.STOPPING_ACTIONS
 
 
 def test_chaque_choix_est_explique():
     for choice in maintenance_pin.MAINTENANCE_CHOICES:
         assert choice.label and choice.description
-        assert "teindre" not in choice.label + choice.description
-    quit_choice = maintenance_pin.MAINTENANCE_CHOICES[-1]
+    by_action = {c.action: c for c in maintenance_pin.MAINTENANCE_CHOICES}
+    quit_choice = by_action[maintenance_pin.MAINTENANCE_ACTION_QUIT]
     assert "Le PC reste allumé" in quit_choice.description
+    assert "teindre" not in quit_choice.label   # « Quitter » n'éteint rien
+    poweroff = by_action[maintenance_pin.MAINTENANCE_ACTION_POWEROFF]
+    assert "bouton d'alimentation" in poweroff.description
+
+
+def test_eteindre_propose_seulement_si_le_systeme_sait_le_faire():
+    without = [c.action for c in maintenance_pin.maintenance_choices(False)]
+    assert maintenance_pin.MAINTENANCE_ACTION_POWEROFF not in without
+    assert maintenance_pin.MAINTENANCE_ACTION_QUIT in without
+    assert (maintenance_pin.maintenance_choices(True)
+            == maintenance_pin.MAINTENANCE_CHOICES)
+
+
+def test_textes_d_extinction():
+    text = maintenance_pin.poweroff_confirmation_text()
+    assert "bouton d'alimentation" in text and text.endswith("?")
+    assert "redémarrer" in maintenance_pin.poweroff_failed_text()
+
+
+def test_extinction_annoncee_au_serveur_comme_un_arret():
+    code, message = maintenance_pin.shutdown_server_event(
+        maintenance_pin.MAINTENANCE_ACTION_POWEROFF)
+    assert code == "kiosk_stopped"
+    assert "éteinte" in message
 
 
 # --- Touche plein écran (F11) et code PIN ------------------------------------

@@ -16,6 +16,7 @@ import desktop_integration
 import logging_config
 import maintenance_pin
 import pin_lockout
+import system_power
 import ui_assets
 from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
 from errors import (
@@ -1077,8 +1078,8 @@ class WebViewClient:
     def _on_maintenance_choice(self, action):
         """Fin du menu de maintenance (fil Qt)."""
         self._maintenance_gate = None
-        if action in (maintenance_pin.MAINTENANCE_ACTION_CONFIGURE,
-                      maintenance_pin.MAINTENANCE_ACTION_QUIT):
+        if (action == maintenance_pin.MAINTENANCE_ACTION_CONFIGURE
+                or action in maintenance_pin.STOPPING_ACTIONS):
             self.close_for_maintenance(action)
         elif action == maintenance_pin.MAINTENANCE_ACTION_RESUME:
             logger.info("Reprise du service demandée (menu de maintenance).")
@@ -1347,12 +1348,19 @@ def _after_maintenance_close(action):
     """La fenêtre de la borne s'est fermée pour la maintenance.
 
     Renvoie les options de relance de la borne, ou None pour ne pas la
-    relancer (« Quitter l'application »). Le code PIN a déjà été demandé
-    par le menu, par-dessus la borne (``maintenance_gate``)."""
+    relancer (« Quitter l'application », « Éteindre le PC »). Le code PIN a
+    déjà été demandé par le menu, par-dessus la borne
+    (``maintenance_gate``)."""
     if action == maintenance_pin.MAINTENANCE_ACTION_QUIT:
         logger.info("Fermeture de l'application demandée (menu de "
                     "maintenance) : la borne ne sera pas relancée.")
         return None
+    if action == maintenance_pin.MAINTENANCE_ACTION_POWEROFF:
+        if system_power.power_off():
+            return None
+        # Extinction refusée : la borne ne reste pas arrêtée, PC allumé.
+        _show_notice("Éteindre le PC", maintenance_pin.poweroff_failed_text())
+        return []
     if action == maintenance_pin.MAINTENANCE_ACTION_CONFIGURE:
         logger.info("Ouverture de la configuration (menu de maintenance).")
         _launch_config_editor(kiosk_follows=True,
@@ -1362,6 +1370,17 @@ def _after_maintenance_close(action):
     # Fenêtre fermée hors menu (Alt+F4, croix…) : la borne repart avec le
     # menu de maintenance ouvert — même code PIN, mêmes choix que F10.
     return [MAINTENANCE_OPTION]
+
+
+def _show_notice(title, text):
+    """Message bref au technicien après la fermeture de la borne (Tk) ;
+    se ferme seul. Sans Tk, il n'est que journalisé."""
+    try:
+        import config_editor
+        config_editor.show_notice(title, text)
+    except Exception:
+        # FRONTIÈRE : Tk absent ou en panne — la borne repart quand même.
+        logger.exception("Message « %s » impossible à afficher.", title)
 
 
 #: Options qui font une action puis quittent, sans lancer la borne.
@@ -1484,7 +1503,7 @@ def _selfcheck():
                    'escpos.printer', 'usb.core',
                    'keyring.backends.SecretService', 'keyring.backends.chainer',
                    'tkinter', 'config_editor', 'setup_wizard',
-                   'maintenance_gate'):
+                   'maintenance_gate', 'system_power'):
         try:
             importlib.import_module(module)
         except Exception as exc:  # tout rapporter : c'est un diagnostic

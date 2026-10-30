@@ -190,17 +190,23 @@ rien.
      confirmation, l'application borne se ferme et **ne redémarre pas** (le
      PC, lui, reste allumé). Pour la relancer : « Flowelis Borne » dans le
      menu des applications, ou redémarrage du PC (lancement automatique à
-     l'ouverture de session).
+     l'ouverture de session) ;
+   - **Éteindre le PC** (en rouge, tout en bas ; Linux uniquement) : après
+     confirmation, l'application se ferme puis le PC s'éteint
+     (`systemctl poweroff`). Pour rallumer la borne : bouton d'alimentation
+     du PC. Si le système refuse l'extinction (droits de la session), un
+     message le dit et la borne redémarre au lieu de rester arrêtée.
 
 Code refusé ou annulé : la borne continue simplement son service.
 
 **Ticket en cours** : si un ticket est en train de sortir quand la borne se
-ferme (configuration, « Quitter », Alt+F4), la fermeture attend la fin de
+ferme (configuration, « Quitter », « Éteindre », Alt+F4), la fermeture attend la fin de
 l'impression et que la page ait noté le résultat (au plus 30 s). Le patient
 ne repart pas avec un ticket coupé ou absent de la file.
 
-**Serveur prévenu** : juste avant de se fermer pour la configuration ou sur
-« Quitter l'application », la borne l'annonce au serveur. Dans l'admin
+**Serveur prévenu** : juste avant de se fermer pour la configuration, sur
+« Quitter l'application » ou « Éteindre le PC », la borne l'annonce au
+serveur. Dans l'admin
 (page « Bornes »), elle apparaît alors **« En maintenance »** ou
 **« Arrêtée »** au lieu de « Injoignable », sans alerte au comptoir. Une
 maintenance n'explique le silence que 30 min : au-delà, la borne redevient

@@ -21,6 +21,8 @@ import maintenance_gate as gate
 CONFIGURE = maintenance_pin.MAINTENANCE_ACTION_CONFIGURE
 RESUME = maintenance_pin.MAINTENANCE_ACTION_RESUME
 QUIT = maintenance_pin.MAINTENANCE_ACTION_QUIT
+POWEROFF = maintenance_pin.MAINTENANCE_ACTION_POWEROFF
+ALL_CHOICES = maintenance_pin.MAINTENANCE_CHOICES
 
 # Empreinte fixe : comme sur une borne, le PIN enregistré ne change pas d'une
 # ouverture à l'autre (un nouveau sel = un nouveau PIN = compteur vierge).
@@ -52,9 +54,9 @@ class _Clock:
 
 
 def _confirm(answer, asked=None):
-    def confirm(_parent):
+    def confirm(_parent, action):
         if asked is not None:
-            asked.append(True)
+            asked.append(action)
         return answer
     return confirm
 
@@ -64,14 +66,15 @@ def _confirm(answer, asked=None):
 
 @pytest.fixture
 def menu(kiosk):
-    dialog = gate.ActionDialog(kiosk, timeout_s=60, confirm=_confirm(False))
+    dialog = gate.ActionDialog(kiosk, timeout_s=60, confirm=_confirm(False),
+                               choices=ALL_CHOICES)
     dialog.open()
     yield dialog
     dialog.close()
 
 
 def test_un_bouton_par_choix_empiles_dans_l_ordre(menu):
-    choices = maintenance_pin.MAINTENANCE_CHOICES
+    choices = ALL_CHOICES
     assert list(menu.buttons) == [c.action for c in choices]
     tops = [menu.buttons[c.action].y() for c in choices]
     assert tops == sorted(tops) and len(set(tops)) == len(tops)
@@ -84,10 +87,47 @@ def test_boutons_assez_grands_pour_le_doigt(menu):
         assert button.height() >= 44
 
 
-def test_quitter_en_rouge_et_les_autres_non(menu):
+def test_arrets_en_rouge_et_les_autres_non(menu):
     for action, button in menu.buttons.items():
         red = gate.DANGER_COLOR in button.styleSheet()
-        assert red == (action == QUIT)
+        assert red == (action in (QUIT, POWEROFF))
+
+
+def test_un_seul_separateur_avant_les_arrets(menu):
+    lines = [f for f in menu.findChildren(gate.QFrame)
+             if f.frameShape() == gate.QFrame.Shape.HLine]
+    assert len(lines) == 1
+    assert lines[0].y() < menu.buttons[QUIT].y()
+    assert lines[0].y() > menu.buttons[RESUME].y()
+
+
+def test_eteindre_absent_si_le_systeme_ne_sait_pas(kiosk, monkeypatch):
+    monkeypatch.setattr(gate.system_power, "supported", lambda: False)
+    dialog = gate.ActionDialog(kiosk)
+    assert POWEROFF not in dialog.buttons
+    assert QUIT in dialog.buttons
+
+
+def test_eteindre_present_si_le_systeme_sait(kiosk, monkeypatch):
+    monkeypatch.setattr(gate.system_power, "supported", lambda: True)
+    dialog = gate.ActionDialog(kiosk)
+    assert list(dialog.buttons)[-1] == POWEROFF
+
+
+def test_eteindre_confirme(kiosk):
+    asked = []
+    dialog = gate.ActionDialog(kiosk, confirm=_confirm(True, asked),
+                               choices=ALL_CHOICES)
+    dialog.open()
+    dialog.buttons[POWEROFF].click()
+    assert asked == [POWEROFF]
+    assert dialog.action == POWEROFF
+
+
+def test_eteindre_refuse_ne_ferme_rien(menu):
+    menu.buttons[POWEROFF].click()
+    assert menu.action is None
+    assert menu.isVisible()
 
 
 def test_menu_annonce_la_reprise_automatique(menu):
@@ -119,7 +159,7 @@ def test_quitter_confirme(kiosk):
     dialog = gate.ActionDialog(kiosk, confirm=_confirm(True, asked))
     dialog.open()
     dialog.buttons[QUIT].click()
-    assert asked == [True]
+    assert asked == [QUIT]
     assert dialog.action == QUIT
 
 
@@ -146,7 +186,7 @@ def test_entree_sur_quitter_demande_confirmation(kiosk):
     dialog = gate.ActionDialog(kiosk, confirm=_confirm(False, asked))
     dialog.open()
     QTest.keyClick(dialog.buttons[QUIT], Qt.Key.Key_Return)
-    assert asked == [True]
+    assert asked == [QUIT]
     assert dialog.action is None
     dialog.close()
 

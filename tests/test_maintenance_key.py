@@ -406,8 +406,9 @@ def test_reprendre_ou_abandonner_ne_ferme_rien(monkeypatch, answer):
 
 @pytest.mark.parametrize("answer", [
     maintenance_pin.MAINTENANCE_ACTION_CONFIGURE,
-    maintenance_pin.MAINTENANCE_ACTION_QUIT])
-def test_configurer_ou_quitter_ferme_la_borne(monkeypatch, answer):
+    maintenance_pin.MAINTENANCE_ACTION_QUIT,
+    maintenance_pin.MAINTENANCE_ACTION_POWEROFF])
+def test_configurer_quitter_ou_eteindre_ferme_la_borne(monkeypatch, answer):
     _fake_gate(monkeypatch, answer)
     _settings_with_pin(monkeypatch, "")
     native = _FakeNative()
@@ -540,6 +541,37 @@ def test_configuration_ouvre_l_editeur_devant_le_fond_puis_relance(monkeypatch):
         "kiosk_follows": True,
         "idle_timeout_s": main.MAINTENANCE_EDITOR_IDLE_TIMEOUT_S,
         "backdrop": True})]
+
+
+def test_eteindre_le_pc_sans_relance(monkeypatch):
+    calls = []
+    _fake_editor(monkeypatch, calls)
+    monkeypatch.setattr(main.system_power, "power_off", lambda: True)
+    assert main._after_maintenance_close(
+        maintenance_pin.MAINTENANCE_ACTION_POWEROFF) is None
+    assert calls == []
+
+
+def test_extinction_refusee_relance_la_borne(monkeypatch):
+    """La borne ne reste pas arrêtée avec le PC allumé : message, relance."""
+    notices = []
+    monkeypatch.setattr(main.system_power, "power_off", lambda: False)
+    monkeypatch.setattr(main, "_show_notice",
+                        lambda title, text: notices.append(text))
+    assert main._after_maintenance_close(
+        maintenance_pin.MAINTENANCE_ACTION_POWEROFF) == []
+    assert notices == [maintenance_pin.poweroff_failed_text()]
+
+
+def test_message_sans_tk_ne_bloque_pas(monkeypatch):
+    module = types.ModuleType("config_editor")
+
+    def show_notice(title, text):
+        raise RuntimeError("Tk indisponible")
+
+    module.show_notice = show_notice
+    monkeypatch.setitem(sys.modules, "config_editor", module)
+    main._show_notice("Titre", "Texte")      # ne lève pas
 
 
 def test_quitter_l_application_empeche_la_relance(monkeypatch):

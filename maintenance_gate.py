@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 import desktop_integration
 import maintenance_pin
 import pin_lockout
+import system_power
 
 logger = logging.getLogger("borne.maintenance")
 
@@ -262,19 +263,25 @@ class PinDialog(_MaintenanceDialog):
         super().done(result)
 
 
-def confirm_quit(parent, timeout_s=ACTION_DIALOG_TIMEOUT_S):
-    """Confirmation de « Quitter l'application » ; True si confirmée.
+def confirm_stop(parent, action, timeout_s=ACTION_DIALOG_TIMEOUT_S):
+    """Confirmation de « Quitter l'application » ou « Éteindre le PC » ;
+    True si confirmée.
 
     Boutons en français (sans traduction Qt chargée, les boutons standard
     seraient en anglais) ; « Annuler » par défaut. Sans réponse, la
     question se referme d'elle-même (refus)."""
+    if action == maintenance_pin.MAINTENANCE_ACTION_POWEROFF:
+        title = "Éteindre le PC"
+        text = maintenance_pin.poweroff_confirmation_text()
+    else:
+        title = "Quitter l'application"
+        text = maintenance_pin.quit_confirmation_text(
+            desktop_integration.supported())
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setWindowTitle("Quitter l'application")
-    box.setText(maintenance_pin.quit_confirmation_text(
-        desktop_integration.supported()))
-    quit_button = box.addButton("Quitter l'application",
-                                QMessageBox.ButtonRole.DestructiveRole)
+    box.setWindowTitle(title)
+    box.setText(text)
+    quit_button = box.addButton(title, QMessageBox.ButtonRole.DestructiveRole)
     cancel_button = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
     box.setDefaultButton(cancel_button)
     box.setEscapeButton(cancel_button)
@@ -291,10 +298,10 @@ def confirm_quit(parent, timeout_s=ACTION_DIALOG_TIMEOUT_S):
 class ActionDialog(_MaintenanceDialog):
     """Suite à donner après la touche de maintenance.
 
-    Un grand bouton par choix (``maintenance_pin.MAINTENANCE_CHOICES``),
+    Un grand bouton par choix (``maintenance_pin.maintenance_choices``),
     empilés, chacun suivi d'une phrase d'explication : la fenêtre s'utilise
-    aussi au doigt. « Quitter l'application » est à part, en bas et en
-    rouge, et demande confirmation.
+    aussi au doigt. « Quitter l'application » et « Éteindre le PC » sont à
+    part, en bas et en rouge, et demandent confirmation.
 
     ``action`` vaut l'action choisie ; il reste None sur Échap ou
     inactivité — la borne reprend alors son service."""
@@ -303,10 +310,13 @@ class ActionDialog(_MaintenanceDialog):
                 "reprend son service."
 
     def __init__(self, parent=None, timeout_s=ACTION_DIALOG_TIMEOUT_S,
-                 confirm=confirm_quit):
+                 confirm=confirm_stop, choices=None):
         super().__init__(parent, timeout_s)
         self.action = None
         self._confirm = confirm
+        if choices is None:
+            choices = maintenance_pin.maintenance_choices(
+                system_power.supported())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -319,11 +329,13 @@ class ActionDialog(_MaintenanceDialog):
         layout.addWidget(intro)
 
         self.buttons = {}
-        default_action = maintenance_pin.MAINTENANCE_CHOICES[0].action
-        for choice in maintenance_pin.MAINTENANCE_CHOICES:
-            if choice.danger:
-                # Séparé des autres choix : on ne l'atteint pas par erreur
-                # en visant le bouton d'au-dessus.
+        default_action = choices[0].action
+        separated = False
+        for choice in choices:
+            if choice.danger and not separated:
+                separated = True
+                # Séparés des autres choix : on ne les atteint pas par
+                # erreur en visant le bouton d'au-dessus.
                 layout.addSpacing(16)
                 line = QFrame()
                 line.setFrameShape(QFrame.Shape.HLine)
@@ -361,11 +373,11 @@ class ActionDialog(_MaintenanceDialog):
         return button
 
     def choose(self, action):
-        if action == maintenance_pin.MAINTENANCE_ACTION_QUIT:
+        if action in maintenance_pin.STOPPING_ACTIONS:
             # La question a son propre délai : la fenêtre ne doit pas se
             # fermer sous elle.
             self.idle_timer.stop()
-            confirmed = self._confirm(self)
+            confirmed = self._confirm(self, action)
             if not confirmed:
                 self.idle_timer.start()
                 return
@@ -384,7 +396,7 @@ class MaintenanceGate(QObject):
     def __init__(self, parent_window, stored_hash, on_done, state_path=None,
                  on_lockout=None, pin_timeout_s=PIN_DIALOG_TIMEOUT_S,
                  action_timeout_s=ACTION_DIALOG_TIMEOUT_S, clock=time.time,
-                 confirm=confirm_quit):
+                 confirm=confirm_stop):
         super().__init__(parent_window)
         self._parent_window = parent_window
         self._stored_hash = stored_hash

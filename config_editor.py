@@ -800,6 +800,34 @@ def create_backdrop(editor, fullscreen=True):
     return backdrop
 
 
+#: Délai au bout duquel ``show_notice`` se ferme seul.
+NOTICE_TIMEOUT_S = 30
+
+
+def show_notice(title, text, timeout_s=NOTICE_TIMEOUT_S):
+    """Petit message au technicien (bouton OK), fermé seul après
+    ``timeout_s`` : la borne ne doit pas attendre quelqu'un qui est parti."""
+    window = tk.Tk()
+    window.title(title)
+    window.resizable(False, False)
+
+    def close(_event=None):
+        _cancel_pending_callbacks(window)
+        window.destroy()
+
+    frame = ttk.Frame(window, padding=24)
+    frame.pack()
+    ttk.Label(frame, text=text, wraplength=420, justify="left").pack(
+        anchor="w")
+    ttk.Button(frame, text="OK", command=close).pack(anchor="e", pady=(16, 0))
+    window.bind("<Return>", close)
+    window.bind("<Escape>", close)
+    window.protocol("WM_DELETE_WINDOW", close)
+    window.after(int(timeout_s * 1000), close)
+    _bring_to_front(window)
+    window.mainloop()
+
+
 def _bring_to_front(window):
     """Fait passer ``window`` au premier plan avec le focus clavier.
 

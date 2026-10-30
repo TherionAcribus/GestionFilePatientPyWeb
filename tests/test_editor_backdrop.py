@@ -68,3 +68,14 @@ def test_le_fond_part_avec_l_editeur(editor):
     editor.destroy()
     with pytest.raises(tk.TclError):
         backdrop.winfo_exists()
+
+
+def test_message_au_technicien_se_ferme_seul(capsys):
+    """Extinction refusée : le message ne doit pas bloquer la relance de la
+    borne si personne ne le lit."""
+    with capsys.disabled():
+        try:
+            config_editor.show_notice("Éteindre le PC", "Refusé.",
+                                      timeout_s=0.1)
+        except tk.TclError as exc:
+            pytest.skip(f"Pas d'affichage pour Tk : {exc}")

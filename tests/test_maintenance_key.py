@@ -9,11 +9,13 @@ modules Qt ; un test supplémentaire utilise le vrai Qt quand il est présent.
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
 import main
 import maintenance_pin
+import pin_lockout
 
 
 def _client():
@@ -242,9 +244,13 @@ def test_echec_de_fermeture_annule_la_demande():
 
 # --- Code PIN puis action de maintenance --------------------------------------
 
+_CONFIG_DIR = Path("dossier-config")
+
+
 def _settings_with_pin(monkeypatch, pin_hash):
     fake_config = types.SimpleNamespace(
-        settings=types.SimpleNamespace(maintenance_pin_hash=pin_hash))
+        settings=types.SimpleNamespace(maintenance_pin_hash=pin_hash),
+        config_path=_CONFIG_DIR)
     monkeypatch.setattr(main, "Config", lambda: fake_config)
 
 
@@ -259,8 +265,8 @@ def _fake_editor(monkeypatch, calls, pin_granted=True, pin_fails=False,
         def mainloop(self):
             pass
 
-    def ask_maintenance_pin(stored_hash):
-        calls.append(("pin", stored_hash))
+    def ask_maintenance_pin(stored_hash, state_path=None):
+        calls.append(("pin", stored_hash, state_path))
         if pin_fails:
             raise RuntimeError("Tk indisponible")
         return pin_granted
@@ -295,6 +301,8 @@ def test_pin_correct_ouvre_l_editeur(monkeypatch):
     assert main._run_maintenance() is True
     assert [c[0] for c in calls] == ["pin", "action", "editor"]
     assert calls[0][1] == stored
+    # Compteur d'erreurs gardé dans le dossier de configuration.
+    assert calls[0][2] == _CONFIG_DIR / pin_lockout.STATE_FILENAME
 
 
 def test_pin_refuse_n_ouvre_pas_l_editeur(monkeypatch):

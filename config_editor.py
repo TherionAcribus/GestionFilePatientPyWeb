@@ -12,6 +12,7 @@ import desktop_integration
 import editor_logic
 import logging_config
 import maintenance_pin
+import pin_lockout
 from config import Config, Settings, resolve_server_url
 from maintenance_pin import MAINTENANCE_KEY
 
@@ -25,8 +26,6 @@ _DANGER_COLOR = "#b00020"
 # Timeout (connexion, lecture) du test de joignabilité du serveur.
 _TEST_TIMEOUT = (5, 10)
 
-# Fenêtre du code PIN : nombre d'essais, puis abandon (la borne repart).
-PIN_MAX_ATTEMPTS = 3
 # Sans saisie pendant ce délai, la fenêtre du PIN se ferme : une touche de
 # maintenance pressée par erreur ne laisse pas la borne hors service.
 PIN_DIALOG_TIMEOUT_S = 60
@@ -790,19 +789,29 @@ def _bring_to_front(window):
 class MaintenancePinDialog(tk.Tk):
     """Demande le code PIN de maintenance avant d'ouvrir la configuration.
 
-    ``granted`` passe à True si le code est bon. Fermeture, Échap, essais
-    épuisés ou inactivité : ``granted`` reste False et la borne repart."""
+    ``granted`` passe à True si le code est bon. Fermeture, Échap ou
+    inactivité : ``granted`` reste False et la borne repart.
 
-    def __init__(self, stored_hash, max_attempts=PIN_MAX_ATTEMPTS,
-                 timeout_s=PIN_DIALOG_TIMEOUT_S):
+    Les erreurs sont comptées d'un lancement à l'autre
+    (``pin_lockout``, fichier ``state_path``) : au-delà des essais libres,
+    chaque erreur impose une attente croissante, affichée ici avec un compte
+    à rebours. Sans ``state_path``, le compteur ne vit que dans la fenêtre.
+    ``clock`` (horloge murale) est remplaçable pour les tests."""
+
+    def __init__(self, stored_hash, state_path=None,
+                 timeout_s=PIN_DIALOG_TIMEOUT_S, clock=time.time):
         super().__init__()
         self.title("Maintenance — Flowelis Borne")
         self.resizable(False, False)
         self.granted = False
         self._stored_hash = stored_hash
-        self._attempts_left = max_attempts
+        self._state_path = state_path
+        self._clock = clock
         self._timeout_s = timeout_s
         self._last_activity = time.monotonic()
+        self._locked = False
+        self._state = pin_lockout.current_state(
+            pin_lockout.load_state(state_path), stored_hash, clock())
 
         frame = ttk.Frame(self, padding=24)
         frame.pack()
@@ -812,14 +821,16 @@ class MaintenancePinDialog(tk.Tk):
         self._entry = ttk.Entry(frame, show="*", textvariable=self._pin,
                                 width=16, font=('Helvetica', 16))
         self._entry.pack(pady=(10, 6), fill="x")
-        self._message = tk.Label(frame, text="", fg=_DANGER_COLOR)
+        self._message = tk.Label(frame, text="", fg=_DANGER_COLOR,
+                                 justify="left", wraplength=320)
         self._message.pack(anchor="w")
 
         buttons = ttk.Frame(frame)
         buttons.pack(pady=(10, 0), fill="x")
         ttk.Button(buttons, text="Annuler", command=self.destroy).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Valider", command=self._submit).pack(
-            side=tk.RIGHT, padx=(0, 6))
+        self._submit_button = ttk.Button(buttons, text="Valider",
+                                         command=self._submit)
+        self._submit_button.pack(side=tk.RIGHT, padx=(0, 6))
 
         for sequence in ("<Return>", "<KP_Enter>"):
             self.bind(sequence,
@@ -835,13 +846,21 @@ class MaintenancePinDialog(tk.Tk):
         _bring_to_front(self)
         self.after(100, self._entry.focus_force)
         self.after(1000, self._check_timeout)
+        if pin_lockout.remaining_s(self._state, clock()) > 0:
+            # Attente en cours (erreurs lors d'un appui précédent sur F10).
+            self._enter_lock()
+        elif self._state.failures:
+            self._show_attempts_left("Codes incorrects récemment")
 
     def destroy(self):
         _cancel_pending_callbacks(self)
         super().destroy()
 
     def _note_activity(self, _event=None):
-        self._last_activity = time.monotonic()
+        # Pendant une attente, taper au clavier ne retient pas la fenêtre :
+        # la borne repart au bout du délai d'inactivité.
+        if not self._locked:
+            self._last_activity = time.monotonic()
 
     def _check_timeout(self):
         if time.monotonic() - self._last_activity >= self._timeout_s:
@@ -851,26 +870,65 @@ class MaintenancePinDialog(tk.Tk):
             return
         self.after(1000, self._check_timeout)
 
+    def _save_state(self):
+        pin_lockout.save_state(self._state_path, self._state)
+
     def _submit(self):
+        if self._locked:
+            return
         if maintenance_pin.verify_pin(self._pin.get(), self._stored_hash):
+            self._state = pin_lockout.record_success(self._state)
+            self._save_state()
             self.granted = True
             self.destroy()
             return
-        self._attempts_left -= 1
         self._pin.set("")
-        if self._attempts_left <= 0:
-            logger.warning("Accès maintenance refusé : code PIN incorrect, "
-                           "essais épuisés.")
-            self.destroy()
+        self._state = pin_lockout.record_failure(self._state, self._clock())
+        self._save_state()
+        wait = pin_lockout.remaining_s(self._state, self._clock())
+        logger.warning("Code PIN de maintenance incorrect (%d erreur(s) de "
+                       "suite)%s.", self._state.failures,
+                       f" : attente imposée de {pin_lockout.format_wait(wait)}"
+                       if wait else "")
+        if wait:
+            self._enter_lock()
             return
-        logger.warning("Code PIN de maintenance incorrect.")
+        self._show_attempts_left("Code incorrect")
+
+    def _show_attempts_left(self, reason):
+        left = pin_lockout.attempts_before_lock(self._state)
         self._message.config(
-            text=f"Code incorrect — {self._attempts_left} essai(s) restant(s).")
+            fg=_DANGER_COLOR,
+            text=f"{reason} — encore {left} essai(s) avant une attente.")
+
+    def _enter_lock(self):
+        self._locked = True
+        self._entry.state(["disabled"])
+        self._submit_button.state(["disabled"])
+        self._tick_lock()
+
+    def _tick_lock(self):
+        wait = pin_lockout.remaining_s(self._state, self._clock())
+        if wait <= 0:
+            self._locked = False
+            self._entry.state(["!disabled"])
+            self._submit_button.state(["!disabled"])
+            self._last_activity = time.monotonic()
+            self._message.config(fg="black", text="Vous pouvez réessayer.")
+            self._entry.focus_force()
+            return
+        self._message.config(
+            fg=_DANGER_COLOR,
+            text=("Trop de codes incorrects. Nouvel essai possible dans "
+                  f"{pin_lockout.format_wait(wait)}."))
+        self.after(1000, self._tick_lock)
 
 
-def ask_maintenance_pin(stored_hash) -> bool:
-    """Affiche la demande de code PIN ; True si le bon code a été saisi."""
-    dialog = MaintenancePinDialog(stored_hash)
+def ask_maintenance_pin(stored_hash, state_path=None) -> bool:
+    """Affiche la demande de code PIN ; True si le bon code a été saisi.
+
+    ``state_path`` : fichier du compteur d'erreurs (cf. ``pin_lockout``)."""
+    dialog = MaintenancePinDialog(stored_hash, state_path=state_path)
     dialog.mainloop()
     return dialog.granted
 

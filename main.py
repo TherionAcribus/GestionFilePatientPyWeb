@@ -14,6 +14,7 @@ from requests.exceptions import RequestException
 import desktop_integration
 import logging_config
 import maintenance_pin
+import pin_lockout
 import ui_assets
 from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
 from errors import (
@@ -1229,17 +1230,24 @@ def _run_setup(kiosk_follows):
     return outcome
 
 
+def _pin_state_path():
+    """Fichier du compteur d'erreurs du code PIN (dossier de configuration)."""
+    return Config().config_path / pin_lockout.STATE_FILENAME
+
+
 def _maintenance_pin_granted(stored_hash):
     """Demande le code PIN de maintenance s'il y en a un.
 
     Sans PIN défini, l'accès est direct (le clavier suffit à écarter les
     patients). Si la fenêtre du PIN ne peut pas s'afficher, l'accès est
-    refusé : la borne repart simplement en service."""
+    refusé : la borne repart simplement en service. Les erreurs sont
+    comptées d'un appui sur F10 à l'autre (``pin_lockout``)."""
     if not maintenance_pin.pin_required(stored_hash):
         return True
     try:
         import config_editor
-        return config_editor.ask_maintenance_pin(stored_hash)
+        return config_editor.ask_maintenance_pin(
+            stored_hash, state_path=_pin_state_path())
     except Exception:
         # FRONTIÈRE : Tk absent ou en panne — on refuse plutôt que d'ouvrir.
         logger.exception("Demande du code PIN de maintenance impossible.")

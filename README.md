@@ -172,8 +172,8 @@ Sur une borne **en service**, la touche **F10** d'un clavier branché ouvre la
 maintenance sans terminal ni redémarrage manuel :
 
 1. la fenêtre kiosque se ferme ;
-2. si un **code PIN de maintenance** est défini, il est demandé (3 essais,
-   abandon après 60 s sans saisie) ;
+2. si un **code PIN de maintenance** est défini, il est demandé (abandon
+   après 60 s sans saisie ; erreurs limitées, voir plus bas) ;
 3. une fenêtre propose alors trois suites, en grands boutons empilés
    utilisables au doigt, chacun suivi d'une phrase d'explication :
    - **Ouvrir la configuration** (en bleu, choix par défaut, touche Entrée) :
@@ -211,6 +211,14 @@ chiffres) : le patient n'a pas de clavier, la touche suffit en général. Il
 n'est jamais stocké en clair (empreinte PBKDF2 salée dans `settings.json`).
 **PIN oublié** : `--config` (ou `python config_editor.py`) lancé depuis le
 système ouvre l'éditeur sans le demander, et permet de le supprimer.
+
+**Codes incorrects** : les 3 premières erreurs sont libres. Ensuite, chaque
+erreur impose une attente affichée avec un compte à rebours, qui double à
+chaque fois (30 s, 1 min, 2 min… jusqu'à 15 min). Le compteur est conservé
+d'un appui sur F10 à l'autre (fichier `maintenance_pin_state.json` du dossier
+de configuration) : rappuyer sur F10 ne redonne pas d'essais. Il revient à
+zéro après un bon code, après 24 h sans erreur, ou quand le PIN est changé
+ou supprimé. Sans PIN, rien de tout cela ne s'applique.
 
 L'éditeur **valide** la configuration avant d'enregistrer et propose deux
 diagnostics :

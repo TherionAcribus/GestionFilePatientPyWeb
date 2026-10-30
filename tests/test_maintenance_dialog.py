@@ -157,3 +157,100 @@ def test_pin_entree_sur_annuler_annule(pin_dialog):
     _press_enter(pin_dialog, cancel)
     assert not pin_dialog.granted
     assert not _alive(pin_dialog)
+
+
+# --- Code PIN : erreurs comptées d'un appui sur F10 à l'autre ---------------------
+
+
+class _Clock:
+    def __init__(self, now=1_800_000_000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+# Empreinte fixe : comme sur une borne, le PIN enregistré ne change pas d'une
+# ouverture à l'autre (un nouveau sel = un nouveau PIN = compteur vierge).
+_PIN_HASH = maintenance_pin.hash_pin("1234")
+
+
+def _open_pin(capsys, state_path, clock):
+    with capsys.disabled():
+        try:
+            window = config_editor.MaintenancePinDialog(
+                _PIN_HASH, state_path=state_path, clock=clock)
+        except tk.TclError as exc:
+            pytest.skip(f"Pas d'affichage pour Tk : {exc}")
+        window.update()
+    return window
+
+
+def _try(window, code):
+    window._pin.set(code)
+    window._submit()
+    if _alive(window):
+        window.update()
+
+
+def test_trois_erreurs_bloquent_puis_debloquent(capsys, tmp_path):
+    clock = _Clock()
+    path = tmp_path / "pin_state.json"
+    window = _open_pin(capsys, path, clock)
+    try:
+        _try(window, "0000")
+        assert "encore 2 essai(s)" in window._message.cget("text")
+        _try(window, "0000")
+        _try(window, "0000")
+        # 3e erreur : attente de 30 s, saisie désactivée.
+        assert window._locked
+        assert window._entry.instate(["disabled"])
+        assert "30 s" in window._message.cget("text")
+        _try(window, "1234")          # même le bon code est ignoré
+        assert not window.granted
+        # Fin de l'attente : la saisie revient.
+        clock.now += 30
+        window._tick_lock()
+        assert not window._locked
+        assert not window._entry.instate(["disabled"])
+        _try(window, "1234")
+        assert window.granted
+    finally:
+        if _alive(window):
+            window.destroy()
+    assert not path.exists()          # bon code : compteur effacé
+
+
+def test_attente_conservee_au_prochain_appui_sur_f10(capsys, tmp_path):
+    """Avant : rappuyer sur F10 redonnait 3 essais neufs."""
+    clock = _Clock()
+    path = tmp_path / "pin_state.json"
+    first = _open_pin(capsys, path, clock)
+    for _ in range(3):
+        _try(first, "0000")
+    first.destroy()
+
+    clock.now += 5
+    second = _open_pin(capsys, path, clock)
+    try:
+        assert second._locked
+        assert "25 s" in second._message.cget("text")
+        _try(second, "1234")
+        assert not second.granted
+    finally:
+        if _alive(second):
+            second.destroy()
+
+
+def test_erreurs_precedentes_annoncees(capsys, tmp_path):
+    clock = _Clock()
+    path = tmp_path / "pin_state.json"
+    first = _open_pin(capsys, path, clock)
+    _try(first, "0000")
+    first.destroy()
+    second = _open_pin(capsys, path, clock)
+    try:
+        assert not second._locked
+        assert "encore 2 essai(s)" in second._message.cget("text")
+    finally:
+        second.destroy()

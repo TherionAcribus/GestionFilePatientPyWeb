@@ -831,3 +831,28 @@ def test_vrai_moteur_qt_plante_reprise_declenchee():
     line = [ln for ln in result.stdout.splitlines() if ln.startswith("RECOVERED:")]
     assert line, result.stdout + result.stderr
     assert line[0].startswith("RECOVERED:plantage, code ")
+
+
+def test_redirection_vers_la_racine_repasse_par_un_ticket():
+    """Racine du site affichée : retour à /patient par un ticket neuf.
+    Avant : /patient chargé directement, donc /login quand la connexion
+    patient est exigée, puis jusqu'à 30 s d'attente avant un ticket."""
+    client = _bare_client()
+    client.operational = True
+    client._window_ready.set()
+    client._patient_page_shown = True
+    client.window = _FakeWindow("http://127.0.0.1:5000/")
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/neuf"}))
+
+    client.on_loaded()
+
+    assert client.window.loaded_urls == [
+        "http://127.0.0.1:5000/patient/kiosk_login/neuf"]
+
+
+def test_plus_de_reglage_webkit():
+    """Variables du moteur WebKitGTK, sans effet avec Qt (gui="qt")."""
+    with open(os.path.join(os.path.dirname(main.__file__), "main.py"),
+              encoding="utf-8") as handle:
+        assert "WEBKIT_" not in handle.read()

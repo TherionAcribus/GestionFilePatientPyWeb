@@ -1297,11 +1297,15 @@ class WebViewClient:
             self._recover_kiosk_session()
             return
 
-        # Si l'utilisateur est redirigé vers la racine après authentification,
-        # on recharge explicitement la page /patient
+        # Redirection inattendue vers la racine : retour à /patient par un
+        # TICKET de session neuf (comme toute récupération). Charger /patient
+        # directement renvoyait vers /login quand la connexion patient est
+        # exigée, et la borne attendait ensuite jusqu'à 30 s (délai entre deux
+        # demandes de ticket) avant de retrouver la page.
         if current_url.rstrip('/') == self.base_url.rstrip('/'):
-            logger.info("Redirection inattendue vers la racine détectée, chargement de /patient")
-            self.window.load_url(f"{self.base_url}/patient")
+            logger.info("Redirection inattendue vers la racine détectée, "
+                        "retour à /patient.")
+            self._force_patient_reload()
 
     def _fullscreen_now(self):
         """La fenêtre est-elle en plein écran ? État réel de Qt si possible
@@ -1359,8 +1363,6 @@ class WebViewClient:
     def run(self):
         """Lance l'application"""
         try:
-            os.environ['WEBKIT_DISABLE_COMPOSITING_MODE'] = '1'
-            os.environ['WEBKIT_FORCE_ACCELERATED_COMPOSITING'] = '1'
             self.create_window()
             config = Config()
             logger.info("Fenêtre créée, démarrage de l'interface (fullscreen=%s).",

@@ -107,6 +107,7 @@ def _bare_client(base_url="http://127.0.0.1:5000"):
     client._offline_screen_shown = False
     client._dom_probe_pending = False
     client._dom_probe_sent_at = None
+    client._dom_probe_error_logged = False
     client._evaluate_js_blocking = None
     client._link_alive = True
     client._link_misses = 0
@@ -571,3 +572,76 @@ def test_link_probe_detects_cut_and_recovery():
     assert [e[0] for e in client.printer_api.events][-1] == "kiosk_link_restored"
     assert any("__kioskLinkState(true)" in s
                for s in client.window.js_scripts)
+
+
+# --- Sonde DOM : journal non inondé ----------------------------------------
+
+class _FakeJavascriptException(Exception):
+    """Doublure de ``webview.JavascriptException`` (pywebview absent en CI)."""
+
+
+def _csp_refusal(_script):
+    # Ce que fait réellement pywebview sur une page du serveur : eval()
+    # refusé par la CSP « script-src 'self' » (vérifié sous Qt WebEngine).
+    raise _FakeJavascriptException({"name": "EvalError"})
+
+
+def _probe_errors(caplog):
+    return [r for r in caplog.records
+            if r.name == "borne.main" and r.levelno >= 30]
+
+
+def test_dom_probe_csp_refusal_is_proof_of_life_without_log(monkeypatch, caplog):
+    """Régression : evaluate_js est toujours refusé par la CSP du serveur ;
+    chaque passage (toutes les 30 s) écrivait une trace complète et le
+    journal (6 Mo) était écrasé en un ou deux jours."""
+    monkeypatch.setattr(main.webview, "JavascriptException",
+                        _FakeJavascriptException, raising=False)
+    client = _bare_client()
+    caplog.set_level("DEBUG", logger="borne.main")
+
+    for _ in range(50):
+        client._dom_probe_pending = True
+        client._run_dom_probe(_csp_refusal)
+        # Le moteur a répondu : pas de rechargement forcé à venir.
+        assert client._dom_probe_pending is False
+
+    assert _probe_errors(caplog) == []
+
+
+def test_dom_probe_unexpected_error_traced_once_per_episode(monkeypatch, caplog):
+    """Une erreur inattendue reste tracée en entier, mais une seule fois
+    tant qu'elle dure ; après une sonde réussie, un nouvel épisode l'est à
+    nouveau."""
+    monkeypatch.setattr(main.webview, "JavascriptException",
+                        _FakeJavascriptException, raising=False)
+    client = _bare_client()
+    caplog.set_level("DEBUG", logger="borne.main")
+
+    def broken(_script):
+        raise RuntimeError("fenêtre détruite")
+
+    for _ in range(10):
+        client._run_dom_probe(broken)
+    errors = _probe_errors(caplog)
+    assert len(errors) == 1 and errors[0].exc_info is not None
+    assert client._dom_probe_pending is False
+
+    client._run_dom_probe(lambda _script: None)   # le moteur répond à nouveau
+    client._run_dom_probe(broken)
+    assert len(_probe_errors(caplog)) == 2
+
+
+def test_dom_probe_thread_runs_the_probe_body():
+    """La sonde armée par le watchdog exécute bien ce corps dans son
+    thread : le drapeau « en attente » retombe dès la réponse."""
+    client = _bare_client()
+    client._evaluate_js_blocking = _csp_refusal
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+
+    client._check_dom_probe()
+
+    deadline = time.monotonic() + 2
+    while client._dom_probe_pending and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client._dom_probe_pending is False

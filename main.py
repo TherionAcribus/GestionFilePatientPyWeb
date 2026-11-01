@@ -174,6 +174,9 @@ class WebViewClient:
         self._offline_screen_shown = False
         self._dom_probe_pending = False
         self._dom_probe_sent_at = None
+        # Erreur inattendue de la sonde déjà tracée en entier (une fois par
+        # épisode, voir _run_dom_probe).
+        self._dom_probe_error_logged = False
         # evaluate_js « bloquant » conservé avant le reroutage CSP : run_js
         # (fire-and-forget) ne prouve pas que le moteur répond.
         self._evaluate_js_blocking = None
@@ -784,17 +787,33 @@ class WebViewClient:
             return
         self._dom_probe_pending = True
         self._dom_probe_sent_at = now
+        threading.Thread(target=self._run_dom_probe, args=(evaluate,),
+                         daemon=True).start()
 
-        def _probe():
-            try:
-                evaluate("void 0")
-            except Exception:
+    def _run_dom_probe(self, evaluate):
+        """Corps de la sonde DOM (thread jetable).
+
+        Une sonde qui revient, même en erreur, prouve que le moteur répond ;
+        seule l'absence de retour déclenche le timeout. Sur les pages du
+        serveur, ``evaluate_js`` est TOUJOURS refusé : pywebview l'enveloppe
+        dans ``eval()``, interdit par la CSP (``script-src 'self'``), et lève
+        ``JavascriptException``. Ce refus est la réponse normale du moteur :
+        il n'est pas journalisé (avant : une trace complète toutes les 30 s,
+        qui écrasait le journal en un ou deux jours). Une autre erreur n'est
+        écrite en entier qu'une fois par épisode."""
+        try:
+            evaluate("void 0")
+            self._dom_probe_error_logged = False
+        except Exception as exc:
+            js_error = getattr(webview, "JavascriptException", None)
+            if isinstance(js_error, type) and isinstance(exc, js_error):
+                self._dom_probe_error_logged = False
+            elif getattr(self, "_dom_probe_error_logged", False):
+                logger.debug("Sonde DOM toujours en erreur : %s", exc)
+            else:
+                self._dom_probe_error_logged = True
                 logger.exception("Sonde DOM de la page patient impossible.")
-            # Une sonde qui revient (même en erreur) prouve que le moteur
-            # répond ; seule l'absence de retour déclenche le timeout.
-            self._dom_probe_pending = False
-
-        threading.Thread(target=_probe, daemon=True).start()
+        self._dom_probe_pending = False
 
     def _force_patient_reload(self):
         """Recharge /patient quand la page est figée : nouveau ticket (le

@@ -294,6 +294,13 @@ STATUS_BACKOFF_MAX = 30.0
 # quand le lien tombe.
 STATUS_HEARTBEAT_INTERVAL = 30
 
+# Incidents de la borne (codes kiosk_* : liaison coupée/rétablie, page perdue,
+# codes PIN faux…) en attente d'envoi. Contrairement à l'état de l'imprimante,
+# dont seul le dernier compte, chaque incident est une ligne du journal
+# « Bornes » : ils sont gardés DANS L'ORDRE pendant une coupure, puis envoyés
+# au retour du réseau. Borné : au-delà, les plus anciens sont abandonnés.
+EVENT_QUEUE_MAX = 50
+
 # Attente maximale (secondes) accordée à un thread de fond pour se terminer à la
 # fermeture. Un `join()` SANS timeout figerait l'arrêt de la borne si le thread
 # était bloqué (ex. envoi HTTP au timeout réseau maximal) : on borne donc
@@ -440,13 +447,25 @@ def decode_and_validate_print_payload(data, encoding='utf-8'):
 
 
 class PrinterStatusThread(threading.Thread):
+    """Envoi au serveur, sur un seul fil, de deux flux distincts :
+
+    - ``status_queue`` : l'ÉTAT de l'imprimante. Seul le plus récent compte :
+      un état en attente est remplacé par un plus récent ;
+    - ``event_queue`` (facultative) : les INCIDENTS de la borne, envoyés un
+      par un dans l'ordre, jamais remplacés. Avant, ils partageaient la file
+      de l'état : pendant une coupure, « liaison coupée » était remplacé par
+      « liaison rétablie » avant d'avoir pu partir, et un incident pouvait
+      écraser un changement d'état de l'imprimante (ou l'inverse)."""
+
     def __init__(self, url, headers, status_queue, session=None,
-                 token_refresh_callback=None, heartbeat_factory=None):
+                 token_refresh_callback=None, heartbeat_factory=None,
+                 event_queue=None):
         super().__init__(daemon=True)
         self.url = url
         self._headers = dict(headers)
         self._headers_lock = threading.Lock()
         self.status_queue = status_queue
+        self.event_queue = event_queue
         self._stop_event = threading.Event()
         # Session persistante : réutilise la connexion TCP/TLS (keep-alive)
         # au lieu d'en rouvrir une à chaque envoi de statut.
@@ -500,9 +519,19 @@ class PrinterStatusThread(threading.Thread):
                 break
         return latest
 
+    def _next_event(self):
+        """Prochain incident à envoyer (le plus ancien), ou None."""
+        if self.event_queue is None:
+            return None
+        try:
+            return self.event_queue.get_nowait()
+        except queue.Empty:
+            return None
+
     def _try_send(self, status_data):
-        """Tente un envoi. Renvoie 'ok' (2xx), 'unauthorized' (401) ou 'fail'
-        (erreur réseau ou tout autre code non-2xx)."""
+        """Tente un envoi. Renvoie 'ok' (2xx), 'unauthorized' (401),
+        'rejected' (refus définitif : autre 4xx, hors 408/429) ou 'fail'
+        (erreur réseau, 5xx, 408/429 : réessayer plus tard)."""
         with self._headers_lock:
             headers = dict(self._headers)
         try:
@@ -535,12 +564,15 @@ class PrinterStatusThread(threading.Thread):
         # Tout code non-2xx est un échec (avant : un 500 était considéré envoyé).
         status_logger.warning("Statut imprimante rejeté par le serveur (HTTP %s)",
                               response.status_code)
+        if 400 <= response.status_code < 500 and response.status_code not in (408, 429):
+            return 'rejected'
         return 'fail'
 
     def run(self):
-        # Statut en cours d'envoi, CONSERVÉ tant qu'il n'est pas acquitté (2xx) :
-        # une erreur réseau ne le fait plus disparaître.
+        # Statut ou incident en cours d'envoi, CONSERVÉ tant qu'il n'est pas
+        # acquitté (2xx) : une erreur réseau ne le fait plus disparaître.
         pending = None
+        pending_is_event = False
         backoff = STATUS_BACKOFF_START
         token_retries = 0  # limite les renouvellements de token immédiats
         # On envoie un premier heartbeat dès le démarrage afin que l'admin
@@ -549,8 +581,12 @@ class PrinterStatusThread(threading.Thread):
         try:
             while not self._stop_event.is_set():
                 if pending is None:
+                    # Les incidents en attente passent d'abord, dans l'ordre.
+                    pending = self._next_event()
+                    pending_is_event = pending is not None
+                if pending is None:
                     # Pas de statut en attente : on en récupère un (attente
-                    # bornée pour rester réactif à l'arrêt).
+                    # bornée pour rester réactif à l'arrêt et aux incidents).
                     try:
                         pending = self.status_queue.get(timeout=0.5)
                     except queue.Empty:
@@ -563,9 +599,10 @@ class PrinterStatusThread(threading.Thread):
                                 status_logger.exception(
                                     "Création du heartbeat imprimante impossible.")
                         continue
-                else:
-                    # On a un statut non acquitté : s'il en est arrivé un plus
-                    # récent entretemps, il le remplace.
+                elif not pending_is_event:
+                    # On a un ÉTAT non acquitté : s'il en est arrivé un plus
+                    # récent entretemps, il le remplace. Un incident, lui,
+                    # n'est jamais remplacé.
                     newer = self._drain_latest()
                     if newer is not None:
                         pending = newer
@@ -574,9 +611,20 @@ class PrinterStatusThread(threading.Thread):
 
                 if result == 'ok':
                     pending = None
+                    pending_is_event = False
                     last_contact = time.monotonic()
                     backoff = STATUS_BACKOFF_START
                     token_retries = 0
+                    continue
+
+                if result == 'rejected' and pending_is_event:
+                    # Refus définitif : le réessayer bloquerait les incidents
+                    # suivants et l'état de l'imprimante derrière lui.
+                    status_logger.warning(
+                        "Incident borne abandonné (refusé par le serveur) : %s",
+                        pending.get('error'))
+                    pending = None
+                    pending_is_event = False
                     continue
 
                 if (result == 'unauthorized' and self._token_refresh_callback
@@ -639,6 +687,10 @@ class Printer:
         # Déduplication des états identiques : un polling « pas de papier » ne
         # doit pas produire une ligne SQL toutes les HEALTH_CHECK_INTERVAL.
         self._last_status_signature = None
+        # Incidents de la borne (kiosk_*) : file ordonnée et bornée, séparée
+        # de l'état (voir report_event), avec sa propre déduplication.
+        self.event_queue = queue.Queue(maxsize=EVENT_QUEUE_MAX)
+        self._last_event_signature = None
         self.is_paper_ok = True
         # Avertissement « backend USB absent » déjà émis (déduplication : le
         # gestionnaire de santé retente l'ouverture en boucle).
@@ -662,7 +714,8 @@ class Printer:
             },
             self.status_queue,
             token_refresh_callback=token_refresh_callback,
-            heartbeat_factory=self._heartbeat_status
+            heartbeat_factory=self._heartbeat_status,
+            event_queue=self.event_queue,
         )
         self.status_thread.start()
 
@@ -1032,8 +1085,10 @@ class Printer:
         timestamp reflète le contact réel avec le serveur."""
         return self._status_item('heartbeat', 'Borne en ligne')
 
-    def send_printer_status(self, error, error_message, is_error=None):
-        signature = (error, error_message, is_error)
+    def send_printer_status(self, error, error_message):
+        """Met en file l'ÉTAT de l'imprimante (seul le dernier compte).
+        Les incidents de la borne passent par ``report_event``."""
+        signature = (error, error_message)
         # File bornée qui ne conserve que le DERNIER état : si un statut est
         # encore en attente (réseau lent/bloqué), on le remplace au lieu
         # d'empiler un backlog de statuts périmés. Le serveur n'a besoin que de
@@ -1049,24 +1104,40 @@ class Printer:
                     self.status_queue.get_nowait()
             except queue.Empty:
                 pass
-            item = self._status_item(error, error_message)
-            if is_error is not None:
-                # Sévérité explicite (incidents kiosk_*) : sans « error »
-                # dans le code, la dérivation historique côté serveur
-                # manquerait l'icône rouge du journal.
-                item["is_error"] = bool(is_error)
-            self.status_queue.put(item)
+            self.status_queue.put(self._status_item(error, error_message))
 
     def report_event(self, code, message, is_error=False):
         """Journalise un incident de la BORNE (page figée, session refusée,
-        récupération) dans le journal serveur.
+        liaison coupée/rétablie…) dans le journal serveur.
 
-        Réutilise le canal des statuts imprimante : les codes ``kiosk_*``
-        sont exclus de l'état métier côté serveur mais prouvent un contact
-        et apparaissent dans le journal de la page « Bornes ». La
-        déduplication par signature évite d'empiler une ligne par tentative
-        pendant une panne prolongée."""
-        self.send_printer_status(code, message, is_error=is_error)
+        Même route que les statuts imprimante (les codes ``kiosk_*`` sont
+        exclus de l'état métier côté serveur mais apparaissent dans le
+        journal de la page « Bornes »), mais file À PART : les incidents
+        partent tous, dans l'ordre, horodatés à leur création, même après
+        une coupure — et n'écrasent jamais l'état de l'imprimante. La file
+        est bornée (``EVENT_QUEUE_MAX``) : pleine, elle abandonne le plus
+        ancien. Un incident identique au précédent n'est pas répété (pas
+        une ligne par tentative pendant une panne prolongée)."""
+        signature = (code, message, bool(is_error))
+        with self._status_lock:
+            if signature == self._last_event_signature:
+                return
+            self._last_event_signature = signature
+            item = self._status_item(code, message)
+            # Sévérité explicite : sans « error » dans le code, la dérivation
+            # historique côté serveur manquerait l'icône rouge du journal.
+            item["is_error"] = bool(is_error)
+            while True:
+                try:
+                    self.event_queue.put_nowait(item)
+                    return
+                except queue.Full:
+                    with contextlib.suppress(queue.Empty):
+                        dropped = self.event_queue.get_nowait()
+                        status_logger.warning(
+                            "File des incidents borne pleine (%d) : incident "
+                            "le plus ancien abandonné (%s).",
+                            EVENT_QUEUE_MAX, dropped.get('error'))
 
     def update_token(self, new_token):
         """Met à jour le token utilisé pour l'envoi des statuts (renouvellement

@@ -86,6 +86,8 @@ def make_printer(device=None, error=False, check_paper=False, monkeypatch=None,
     p.status_queue = queue.Queue()
     p._status_lock = threading.Lock()
     p._last_status_signature = None
+    p.event_queue = queue.Queue(maxsize=printer_module.EVENT_QUEUE_MAX)
+    p._last_event_signature = None
     # Verrou USB sérialisant les accès (ajouté avec la reconnexion USB) :
     # Printer.print l'acquiert, le helper doit donc le fournir.
     p._usb_lock = threading.RLock()
@@ -638,7 +640,7 @@ def test_report_event_enqueues_kiosk_incident_with_severity(monkeypatch):
 
     p.report_event('kiosk_page_dead', 'Page figée', is_error=True)
 
-    item = p.status_queue.get_nowait()
+    item = p.event_queue.get_nowait()
     assert item['error'] == 'kiosk_page_dead'
     assert item['message'] == 'Page figée'
     assert item['is_error'] is True
@@ -654,10 +656,10 @@ def test_report_event_defaults_to_non_error_and_deduplicates(monkeypatch):
     p.report_event('kiosk_page_lost', 'Page patient perdue')
     p.report_event('kiosk_page_lost', 'Page patient perdue')
 
-    item = p.status_queue.get_nowait()
+    item = p.event_queue.get_nowait()
     assert item['error'] == 'kiosk_page_lost'
     assert item['is_error'] is False
-    assert p.status_queue.empty()
+    assert p.event_queue.empty()
 
 
 def test_printer_api_report_event_delegates_to_printer_channel(monkeypatch):
@@ -672,7 +674,7 @@ def test_printer_api_report_event_delegates_to_printer_channel(monkeypatch):
     api.set_event_reporter(p.report_event)
     api.report_event('kiosk_session_fail', 'ticket refusé', is_error=True)
 
-    item = p.status_queue.get_nowait()
+    item = p.event_queue.get_nowait()
     assert item['error'] == 'kiosk_session_fail'
     assert item['is_error'] is True
 

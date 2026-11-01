@@ -433,6 +433,52 @@ loginctl enable-linger "$USER"   # démarrage sans session interactive ouverte
   action = `pythonw.exe` avec les arguments `main.py --supervise` et le bon
   dossier de départ.
 
+### 5.3 Écran toujours allumé et connexion automatique (Linux)
+
+**Écran : rien à régler.** Tant que la borne tourne (configuration et
+assistant compris), elle empêche l'écran de s'éteindre et la session de se
+verrouiller, sans modifier les réglages du bureau, rétablis à sa fermeture
+([`screen_awake.py`](screen_awake.py)) :
+
+- veille du serveur d'affichage X coupée (`xset s off s noblank -dpms`) ;
+- toutes les 50 s, compteurs d'inactivité remis à zéro comme après un
+  contact : `xset s reset`, `xscreensaver-command -deactivate` (Lubuntu :
+  c'est xscreensaver qui noircit et verrouille l'écran), économiseurs
+  freedesktop et Cinnamon (Linux Mint) par D-Bus.
+
+Le journal indique au démarrage ce qui a été appliqué (« Écran toujours
+allumé (bureau : LXQt) : veille X désactivée ; xscreensaver présent… »).
+Session Wayland : non géré (Lubuntu et Mint utilisent X11). Requiert `xset`
+(paquet `x11-xserver-utils`, installé par `install.sh`).
+
+**Connexion automatique** — sans elle, après une coupure de courant ou un
+redémarrage, le PC reste sur l'écran de connexion et la borne ne démarre pas.
+`install.sh` propose de l'activer. À la main (binaire de release), en
+remplaçant `borne` par l'utilisateur de la borne :
+
+- Lubuntu (SDDM) : `/etc/sddm.conf.d/50-flowelis-autologin.conf`
+
+  ```ini
+  [Autologin]
+  User=borne
+  Session=Lubuntu.desktop
+  ```
+
+- Linux Mint (LightDM) : `/etc/lightdm/lightdm.conf.d/50-flowelis-autologin.conf`
+
+  ```ini
+  [Seat:*]
+  autologin-user=borne
+  autologin-user-timeout=0
+  ```
+
+**Retour du courant** : dans le BIOS du PC, régler « Restore on AC power
+loss » (ou équivalent) sur « Power On ».
+
+**Vérification sur la borne** : laisser la borne sans contact plus longtemps
+que le délai de veille du bureau (Lubuntu : Préférences › Économiseur
+d'écran ; 10 min par défaut) — l'écran doit rester allumé et déverrouillé.
+
 ---
 
 ## 6. Journaux

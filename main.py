@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import logging
 import os
@@ -18,6 +19,7 @@ import desktop_integration
 import logging_config
 import maintenance_pin
 import pin_lockout
+import screen_awake
 import single_instance
 import supervisor
 import system_power
@@ -96,6 +98,9 @@ MAINTENANCE_AT_START_DELAY_MS = 1500
 # attend que l'ancienne libère le verrou d'instance (sous Windows, la nouvelle
 # démarre avant la fin de l'ancienne). Retirée au démarrage.
 RESTART_ENV = "FLOWELIS_BORNE_RESTART"
+
+# Écran toujours allumé (screen_awake), posé au démarrage de la borne.
+_screen = None
 
 
 def _jittered_init_delay(delay):
@@ -1506,6 +1511,10 @@ def _restart_kiosk(extra=()):
     command = _restart_command(extra=extra)
     env = _child_environment()
     env[RESTART_ENV] = "1"
+    # execve ne passe pas par atexit : réglages de veille rétablis ici, sinon
+    # la borne relancée prendrait « veille coupée » pour l'état d'origine.
+    if _screen is not None:
+        _screen.stop()
     logger.info("Relance de la borne.")
     logging.shutdown()   # vide les fichiers journaux avant de quitter
     try:
@@ -1671,6 +1680,12 @@ if __name__ == '__main__':
     _instance_lock = _acquire_kiosk_lock()
     if _instance_lock is None:
         sys.exit(0)
+
+    # Écran jamais éteint ni verrouillé tant que la borne tourne (assistant
+    # et configuration compris) ; réglages du bureau rétablis à la sortie.
+    _screen = screen_awake.ScreenAwake()
+    _screen.start()
+    atexit.register(_screen.stop)
 
     # Binaire de release : il crée lui-même ses raccourcis (démarrage
     # automatique, menu, bureau) — install.sh n'est pas passé par là. Pas

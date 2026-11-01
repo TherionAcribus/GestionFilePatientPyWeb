@@ -79,7 +79,8 @@ if command -v apt-get >/dev/null 2>&1; then
         libusb-1.0-0 \
         libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
         libnss3 libxcomposite1 libxdamage1 libxrandr2 "$ALSA" \
-        libxcb-cursor0
+        libxcb-cursor0 \
+        x11-xserver-utils
     ok "Paquets système installés."
 else
     warn "apt-get absent : installez manuellement Python 3.11+, libusb-1.0, Tk et les libs Qt/WebEngine (cf. README §2.1)."
@@ -239,6 +240,57 @@ if [ -f "$ROOT/assets/flowelis.png" ]; then
     ok "Icône Flowelis installée ($ICON_DIR/flowelis.png)."
 fi
 
+# ---------- 7b. connexion automatique au démarrage du PC ----------
+#
+# Sans elle, après une coupure de courant ou un redémarrage, le PC reste sur
+# l'écran de connexion et la borne ne démarre pas. (L'écran reste ensuite
+# allumé et déverrouillé tant que la borne tourne : c'est la borne qui s'en
+# charge, cf. screen_awake.py.) Demandé avant d'agir : à ne pas activer sur
+# un poste de développement. Réponse automatique : FLOWELIS_AUTOLOGIN=oui|non.
+
+info "Connexion automatique de « $USER » au démarrage du PC"
+DM="$(systemctl show -p Id --value display-manager.service 2>/dev/null || true)"
+DM="${DM%.service}"
+if [ -z "$DM" ]; then
+    if [ -d /etc/sddm.conf.d ] || [ -f /etc/sddm.conf ]; then DM=sddm
+    elif [ -d /etc/lightdm ]; then DM=lightdm
+    fi
+fi
+AUTOLOGIN="${FLOWELIS_AUTOLOGIN:-}"
+if [ -z "$AUTOLOGIN" ] && [ -t 0 ]; then
+    read -r -p "    Activer la connexion automatique (recommandé pour une borne) ? [O/n] " AUTOLOGIN || true
+    AUTOLOGIN="${AUTOLOGIN:-o}"
+fi
+case "$AUTOLOGIN" in
+    o|O|oui|Oui|OUI|y|Y|yes)
+        case "$DM" in
+            sddm)   # Lubuntu (LXQt)
+                SESSION=""
+                for s in Lubuntu lxqt; do
+                    if [ -f "/usr/share/xsessions/$s.desktop" ]; then SESSION="$s.desktop"; break; fi
+                done
+                [ -n "$SESSION" ] || SESSION="$(ls /usr/share/xsessions/ 2>/dev/null | head -1)"
+                sudo mkdir -p /etc/sddm.conf.d
+                printf '[Autologin]\nUser=%s\nSession=%s\n' "$USER" "$SESSION" \
+                    | sudo tee /etc/sddm.conf.d/50-flowelis-autologin.conf >/dev/null
+                ok "Connexion automatique activée (SDDM, session $SESSION)."
+                ;;
+            lightdm)   # Linux Mint, Xubuntu…
+                sudo mkdir -p /etc/lightdm/lightdm.conf.d
+                printf '[Seat:*]\nautologin-user=%s\nautologin-user-timeout=0\n' "$USER" \
+                    | sudo tee /etc/lightdm/lightdm.conf.d/50-flowelis-autologin.conf >/dev/null
+                ok "Connexion automatique activée (LightDM)."
+                ;;
+            *)
+                warn "Gestionnaire de connexion « ${DM:-inconnu} » non pris en charge : activez la connexion automatique dans les réglages du système (README § 5.3)."
+                ;;
+        esac
+        ;;
+    *)
+        warn "Connexion automatique non activée : après un redémarrage, il faudra ouvrir la session pour que la borne démarre."
+        ;;
+esac
+
 # ---------- 8. raccourci « Configuration » sur le bureau ----------
 
 DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
@@ -271,6 +323,9 @@ cat <<EOF
     • le secret d'application — fourni par l'administrateur Flowelis.
   Il propose aussi de tester le serveur et l'imprimante. S'il n'est pas
   terminé maintenant, il se rouvrira au premier lancement de la borne.
+
+  Pour qu'elle reparte seule après une coupure de courant, réglez aussi le
+  BIOS du PC : « Restore on AC power loss » (ou équivalent) sur « Power On ».
 EOF
 
 if [ "$OPEN_EDITOR" -eq 1 ]; then

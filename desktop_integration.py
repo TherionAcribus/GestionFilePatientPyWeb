@@ -39,6 +39,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from supervisor import SUPERVISE_OPTION
+
 logger = logging.getLogger("borne.desktop")
 
 #: Marqueur des fichiers créés par la borne : seuls ceux-là sont mis à jour
@@ -115,15 +117,18 @@ def plan_entries(command, config_home: Path, data_home: Path,
                  desktop_dir: Path | None) -> list:
     """Fichiers .desktop à poser pour la commande ``command``."""
     applications = data_home / "applications"
+    # La borne elle-même passe par son gardien (relance après un plantage) ;
+    # configuration et assistant non.
+    kiosk = [*command, SUPERVISE_OPTION]
     entries = [
         Entry(config_home / "autostart" / "flowelis-borne.desktop",
               _desktop_file("Flowelis Borne",
                             "Borne patient Flowelis (démarrage automatique)",
-                            command,
+                            kiosk,
                             extra=[f"{_AUTOSTART_ENABLED}=true"])),
         Entry(applications / "flowelis-borne.desktop",
               _desktop_file("Flowelis Borne", "Borne patient Flowelis",
-                            command, categories="Office;")),
+                            kiosk, categories="Office;")),
         Entry(applications / "flowelis-borne-configuration.desktop",
               _desktop_file("Flowelis Borne — Configuration",
                             "Serveur, secret, imprimante et options de la borne",

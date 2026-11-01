@@ -224,7 +224,7 @@ cat > "$HOME/.config/autostart/flowelis-borne.desktop" <<EOF
 Type=Application
 Name=Flowelis Borne
 Comment=Gestion de file et accueil
-Exec=$PYBIN $ROOT/main.py
+Exec=$PYBIN $ROOT/main.py --supervise
 Icon=flowelis
 X-GNOME-Autostart-enabled=true
 EOF

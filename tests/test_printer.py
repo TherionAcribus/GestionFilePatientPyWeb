@@ -664,19 +664,37 @@ def test_report_event_defaults_to_non_error_and_deduplicates(monkeypatch):
 
 def test_printer_api_report_event_delegates_to_printer_channel(monkeypatch):
     """PrinterAPI est une façade : sans Printer branché (pas encore
-    initialisé -> aucun thread de statuts pour porter l'envoi),
-    report_event est un no-op ; une fois branché, il délègue au canal."""
+    initialisé -> aucun thread de statuts pour porter l'envoi), l'incident
+    est mis de côté puis envoyé, dans l'ordre, à l'ouverture du canal (ex. :
+    relance après un plantage, annoncée dès le démarrage)."""
     api = PrinterAPI()
 
-    api.report_event('kiosk_page_lost', 'page perdue')  # no-op sans canal
+    api.report_event('kiosk_crash_restart', 'relancée', is_error=True)
 
     p = make_printer(check_paper=False, monkeypatch=monkeypatch)
     api.set_event_reporter(p.report_event)
     api.report_event('kiosk_session_fail', 'ticket refusé', is_error=True)
 
+    first = p.event_queue.get_nowait()
+    assert first['error'] == 'kiosk_crash_restart' and first['is_error'] is True
     item = p.event_queue.get_nowait()
     assert item['error'] == 'kiosk_session_fail'
     assert item['is_error'] is True
+
+
+def test_printer_api_incidents_precoces_bornes(monkeypatch):
+    api = PrinterAPI()
+    for i in range(printer_module.EARLY_EVENTS_MAX + 5):
+        api.report_event('kiosk_page_lost', f'n°{i}')
+
+    p = make_printer(check_paper=False, monkeypatch=monkeypatch)
+    api.set_event_reporter(p.report_event)
+
+    messages = []
+    while not p.event_queue.empty():
+        messages.append(p.event_queue.get_nowait()['message'])
+    assert len(messages) == printer_module.EARLY_EVENTS_MAX
+    assert messages[0] == 'n°5'     # les plus anciens sont abandonnés
 
 
 def test_status_thread_sends_periodic_heartbeat(monkeypatch):

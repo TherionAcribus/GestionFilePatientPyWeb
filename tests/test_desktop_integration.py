@@ -87,7 +87,13 @@ def test_creation_de_tous_les_raccourcis(env):
         env.desktop / "flowelis-configuration.desktop",
     }
     assert set(written) == expected
-    assert "Exec=/opt/flowelis/FlowelisBorne-v1.0.0\n" in _read(_autostart(env))
+    # La borne passe par son gardien (relance après un plantage), au
+    # démarrage automatique comme depuis le menu ; pas la configuration.
+    assert ("Exec=/opt/flowelis/FlowelisBorne-v1.0.0 --supervise\n"
+            in _read(_autostart(env)))
+    assert ("Exec=/opt/flowelis/FlowelisBorne-v1.0.0 --supervise\n"
+            in _read(apps / "flowelis-borne.desktop"))
+    assert "--supervise" not in _read(apps / "flowelis-borne-configuration.desktop")
     assert "X-GNOME-Autostart-enabled=true" in _read(_autostart(env))
     assert "--config" in _read(apps / "flowelis-borne-configuration.desktop")
     assert "--setup" in _read(apps / "flowelis-borne-assistant.desktop")

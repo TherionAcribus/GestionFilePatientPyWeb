@@ -363,6 +363,24 @@ met à jour lui-même ses raccourcis :
 - `./FlowelisBorne --install-shortcuts` force la (re)création de tous les
   raccourcis ; `./FlowelisBorne --remove-shortcuts` retire ceux de la borne.
 
+**Relance automatique après un plantage.** Le démarrage automatique et
+l'entrée « Flowelis Borne » du menu lancent la borne avec `--supervise` : un
+petit processus « gardien » (sans fenêtre) lance la vraie borne et la relance
+si elle s'arrête anormalement (plantage, processus tué faute de mémoire…).
+
+| La borne se termine… | Le gardien… |
+|----------------------|-------------|
+| normalement : « Quitter l'application », « Éteindre le PC », borne déjà en service | s'arrête aussi |
+| pour se relancer : configuration (F10), fenêtre fermée par Alt+F4 | la relance aussitôt |
+| anormalement (code d'erreur, signal) | la relance après 2 s ; le délai double à chaque arrêt rapproché (10 min), jusqu'à 5 min |
+
+La borne relancée signale l'incident au serveur (journal de la page
+« Bornes » : « Borne relancée automatiquement après un arrêt anormal… »). En
+fin de session ou à l'arrêt du PC, le gardien arrête la borne sans la
+relancer. Les raccourcis déjà posés par une version précédente du binaire
+reçoivent `--supervise` au lancement suivant ; ceux d'`install.sh`, en
+relançant le script.
+
 Depuis les sources, rien n'est créé automatiquement (un lancement depuis
 l'IDE ne doit pas toucher au poste) : `install.sh` s'en charge, ou
 `python main.py --install-shortcuts`. Création manuelle, pour mémoire :
@@ -374,11 +392,12 @@ kiosque. Créez `~/.config/autostart/flowelis-borne.desktop` :
 [Desktop Entry]
 Type=Application
 Name=Flowelis Borne
-Exec=/chemin/vers/env/bin/python /chemin/vers/GestionFilePatientPyWeb/main.py
+Exec=/chemin/vers/env/bin/python /chemin/vers/GestionFilePatientPyWeb/main.py --supervise
 X-GNOME-Autostart-enabled=true
 ```
 
-**Option B : service systemd utilisateur** (`~/.config/systemd/user/flowelis-borne.service`) :
+**Option B : service systemd utilisateur** (`~/.config/systemd/user/flowelis-borne.service`).
+systemd relance lui-même la borne (`Restart=on-failure`) : **sans** `--supervise`.
 
 ```ini
 [Unit]
@@ -408,10 +427,11 @@ loginctl enable-linger "$USER"   # démarrage sans session interactive ouverte
 ### 5.2 Démarrage automatique — Windows
 
 - **Dossier Démarrage** : créez un raccourci vers
-  `env\Scripts\pythonw.exe main.py` dans
+  `env\Scripts\pythonw.exe main.py --supervise` dans
   `shell:startup` (`Win+R` → `shell:startup`).
 - **ou Planificateur de tâches** : déclencheur « À l'ouverture de session »,
-  action = `pythonw.exe` avec l'argument `main.py` et le bon dossier de départ.
+  action = `pythonw.exe` avec les arguments `main.py --supervise` et le bon
+  dossier de départ.
 
 ---
 
@@ -421,6 +441,8 @@ La borne journalise via `logging` (module [`logging_config.py`](logging_config.p
 
 - Fichier tournant : `<espace utilisateur>/Flowelis/logs/borne.log`
   (rotation locale ~5 Mo : 1 Mo × 5 sauvegardes).
+- Gardien (`--supervise`, § 5.1) : son propre fichier `superviseur.log`, même
+  dossier — arrêts anormaux de la borne, délais de relance.
 - Format : `horodatage [NIVEAU] composant [job=…] message`.
 - Les **secrets/jetons/mots de passe sont masqués** ; le **contenu des tickets
   n'est jamais journalisé**.

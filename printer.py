@@ -111,6 +111,10 @@ def _default_device_factory(id_vendor, id_product, printer_model):
         timeout=USB_IO_TIMEOUT_MS)
 
 
+#: Incidents gardés en attendant l'ouverture du canal des statuts.
+EARLY_EVENTS_MAX = 20
+
+
 class PrinterAPI:
     """API minimaliste pour PyWebView"""
     def __init__(self):
@@ -127,6 +131,11 @@ class PrinterAPI:
         # initialisée — avant cela, aucun thread de statut n'existe pour
         # porter l'envoi.
         self._event_reporter = None
+        # Incidents survenus AVANT l'ouverture de ce canal (ex. relance après
+        # un plantage, annoncée dès le démarrage) : gardés dans l'ordre, puis
+        # envoyés par set_event_reporter. Bornés (EARLY_EVENTS_MAX).
+        self._early_events = []
+        self._events_lock = threading.Lock()
         # Impressions en cours (appels du pont JS pas encore revenus) : la
         # fenêtre ne se ferme pas tant qu'un ticket sort (voir
         # ``wait_until_idle``).
@@ -141,23 +150,36 @@ class PrinterAPI:
     def set_event_reporter(self, reporter):
         """Branche ``report_event`` sur le canal de statuts réel
         (``Printer.report_event``), disponible seulement une fois
-        l'imprimante créée."""
-        self._event_reporter = reporter
+        l'imprimante créée, puis lui confie les incidents mis de côté."""
+        with self._events_lock:
+            self._event_reporter = reporter
+            early, self._early_events = self._early_events, []
+        for code, message, is_error in early:
+            self._deliver(reporter, code, message, is_error)
 
     def report_event(self, code, message, is_error=False):
         """Journalise un incident de la BORNE (page perdue/figée, ticket de
-        session refusé) auprès du serveur — façade déléguant au Printer.
+        session refusé, relance après plantage) auprès du serveur — façade
+        déléguant au Printer.
 
         Sans reporter branché (imprimante pas encore initialisée), aucun
-        thread de statut n'existe pour porter l'envoi : l'incident est
-        tracé localement. Le reporting ne doit jamais casser la
+        thread de statut n'existe pour porter l'envoi : l'incident est mis
+        de côté (les ``EARLY_EVENTS_MAX`` plus récents) et partira à
+        l'ouverture du canal. Le reporting ne doit jamais casser la
         récupération de la borne."""
-        reporter = self._event_reporter
-        if reporter is None:
-            status_logger.info(
-                "Incident borne non remonté (pas de canal de statuts) : %s",
-                code)
-            return
+        with self._events_lock:
+            reporter = self._event_reporter
+            if reporter is None:
+                self._early_events.append((code, message, is_error))
+                del self._early_events[:-EARLY_EVENTS_MAX]
+                status_logger.info(
+                    "Incident borne mis de côté (canal de statuts pas encore "
+                    "ouvert) : %s", code)
+                return
+        self._deliver(reporter, code, message, is_error)
+
+    @staticmethod
+    def _deliver(reporter, code, message, is_error):
         try:
             reporter(code, message, is_error=is_error)
         except Exception:

@@ -152,12 +152,14 @@ def register_secret(value):
     _redacting_filter.register_secret(value)
 
 
-def setup_logging(level=logging.INFO, log_dir=None, console=True):
+def setup_logging(level=logging.INFO, log_dir=None, console=True,
+                  filename=LOG_FILENAME):
     """Configure la journalisation du processus (idempotent).
 
     - ``level`` : niveau initial (ajustable ensuite via ``set_level``).
     - fichier tournant dans ``log_dir`` (défaut : ``default_log_dir()``) ;
-    - handler console optionnel (utile en développement).
+    - handler console optionnel (utile en développement) ;
+    - ``filename`` : nom du fichier (le gardien de la borne a le sien).
 
     Si l'écriture du fichier échoue (droits, disque), on continue avec la seule
     sortie console : la journalisation ne doit pas empêcher la borne de démarrer.
@@ -188,7 +190,7 @@ def setup_logging(level=logging.INFO, log_dir=None, console=True):
             with contextlib.suppress(OSError):
                 os.chmod(log_directory, 0o700)
             file_handler = logging.handlers.RotatingFileHandler(
-                log_directory / LOG_FILENAME,
+                log_directory / filename,
                 maxBytes=_MAX_BYTES,
                 backupCount=_BACKUP_COUNT,
                 encoding="utf-8",

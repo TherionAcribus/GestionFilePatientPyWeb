@@ -2,6 +2,7 @@ import contextlib
 import logging
 import os
 import random
+import signal
 import subprocess
 import sys
 import threading
@@ -18,6 +19,7 @@ import logging_config
 import maintenance_pin
 import pin_lockout
 import single_instance
+import supervisor
 import system_power
 import ui_assets
 from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
@@ -1413,7 +1415,8 @@ def _show_notice(title, text):
 _ONE_SHOT_OPTIONS = ("--config", "--setup", "--selfcheck",
                      "--install-shortcuts", "--remove-shortcuts")
 #: Options valables pour UN lancement : jamais reprises à la relance.
-_SINGLE_LAUNCH_OPTIONS = (MAINTENANCE_OPTION,)
+#: --supervise : seul le gardien la reçoit, jamais la borne qu'il lance.
+_SINGLE_LAUNCH_OPTIONS = (MAINTENANCE_OPTION, supervisor.SUPERVISE_OPTION)
 
 
 def _shortcuts_state_path():
@@ -1455,20 +1458,54 @@ def _restart_command(argv=None, executable=None, frozen=None, extra=()):
     return [executable, os.path.abspath(__file__), *options]
 
 
+def _child_environment():
+    """Environnement d'une borne lancée par ce processus (relance, gardien).
+
+    Binaire PyInstaller « onefile » : ``PYINSTALLER_RESET_ENVIRONMENT`` la
+    fait repartir comme un lancement neuf au lieu de réutiliser le dossier
+    extrait de celui-ci."""
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
+def _run_supervisor():
+    """``--supervise`` : gardien qui lance la borne et la relance si elle
+    s'arrête anormalement (cf. supervisor). Renvoie le code de sortie."""
+    guard = supervisor.Supervisor(
+        lambda extra: _restart_command(extra=extra),
+        restart_codes={supervisor.EXIT_RESTART: (),
+                       supervisor.EXIT_RESTART_MAINTENANCE: (MAINTENANCE_OPTION,)},
+        base_env=_child_environment())
+    # Fin de session / arrêt du PC : ne pas relancer la borne qu'on arrête.
+    for name in ("SIGTERM", "SIGHUP", "SIGINT"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(signum, lambda s, _frame: guard.stop(s))
+    logger.info("Gardien de la borne démarré.")
+    return guard.run()
+
+
 def _restart_kiosk(extra=()):
     """Relance la borne dans un processus neuf (configuration relue, Qt
     réinitialisé) — plus sûr que de redémarrer Qt WebEngine dans ce processus.
 
-    Linux : ``execv`` garde le même PID (service systemd, autostart).
-    Windows : ``execv`` y crée de toute façon un autre processus ; on lance
-    donc le nouveau puis on sort. Binaire PyInstaller « onefile » :
-    ``PYINSTALLER_RESET_ENVIRONMENT`` fait repartir le binaire comme un
-    lancement neuf au lieu de réutiliser le dossier extrait de celui-ci."""
+    Sous le gardien (``--supervise``) : la borne sort avec un code de
+    relance et c'est lui qui la relance. Sinon : Linux, ``execv`` garde le
+    même PID (service systemd, autostart) ; Windows, ``execv`` y crée de
+    toute façon un autre processus, on lance donc le nouveau puis on sort."""
+    if os.environ.get(supervisor.SUPERVISED_ENV):
+        # Borne lancée par le gardien : c'est LUI qui la relance (sinon la
+        # nouvelle borne lui échapperait, et il croirait à un arrêt normal).
+        logger.info("Relance de la borne demandée au gardien.")
+        logging.shutdown()
+        sys.exit(supervisor.EXIT_RESTART_MAINTENANCE
+                 if MAINTENANCE_OPTION in extra else supervisor.EXIT_RESTART)
     command = _restart_command(extra=extra)
-    env = dict(os.environ)
+    env = _child_environment()
     env[RESTART_ENV] = "1"
-    if getattr(sys, "frozen", False):
-        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     logger.info("Relance de la borne.")
     logging.shutdown()   # vide les fichiers journaux avant de quitter
     try:
@@ -1579,6 +1616,13 @@ if __name__ == '__main__':
         print("selfcheck OK")
         sys.exit(0)
 
+    if supervisor.SUPERVISE_OPTION in sys.argv:
+        # Gardien : son propre journal, ni capture de plantage (crash.log
+        # appartient à la borne), ni verrou d'instance (c'est la borne qu'il
+        # lance qui le prend).
+        logging_config.setup_logging(filename=supervisor.LOG_FILENAME)
+        sys.exit(_run_supervisor())
+
     # Journalisation en tout premier, pour capturer même les messages émis
     # pendant le chargement de la configuration. Le niveau est ajusté ensuite
     # selon le réglage debug.
@@ -1637,6 +1681,13 @@ if __name__ == '__main__':
 
     client = _prepare_client()
     client.open_maintenance_on_start = MAINTENANCE_OPTION in sys.argv
+    # Relancée par le gardien après un plantage : le serveur en est prévenu
+    # (journal « Bornes ») dès que le canal des statuts est ouvert.
+    crash_note = os.environ.pop(supervisor.CRASH_ENV, None)
+    if crash_note:
+        logger.warning("%s", crash_note)
+        client.printer_api.report_event(
+            supervisor.SERVER_EVENT_CRASH_RESTART, crash_note, is_error=True)
     logging_config.set_level(logging.DEBUG if Config().settings.debug else logging.INFO)
     client.run()
 

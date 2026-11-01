@@ -7,6 +7,12 @@
 # module `printer` — il est donc inclus ici pour la CI.
 requests==2.34.2
 
+# Qt (sans WebEngine) pour les tests du code PIN / menu de maintenance et des
+# touches F10/F11, exécutés en vrai Qt hors écran (QT_QPA_PLATFORM=offscreen).
+# Sans lui, ces tests étaient ignorés en CI. Même version que PySide6 dans
+# requirements.txt (un test le vérifie).
+PySide6-Essentials==6.11.2
+
 # Tests
 pytest==9.1.1
 

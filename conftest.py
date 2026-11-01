@@ -8,8 +8,12 @@ minimalistes dans ``sys.modules`` avant toute collecte de tests, afin que
 ``Printer`` (fabrique de périphérique injectable) permet ensuite d'utiliser une
 fausse imprimante dans les tests.
 """
+import gc
+import os
 import sys
 import types
+
+import pytest
 
 
 def _install_escpos_stub():
@@ -83,3 +87,36 @@ def _install_webview_stub():
 _install_escpos_stub()
 _install_usb_stub()
 _install_webview_stub()
+
+
+# --- Fin de session avec Qt (CI Linux) -------------------------------------
+# Les tests du menu de maintenance créent de vraies fenêtres Qt sans parent.
+# Sous Linux, pytest (≥ 9, plugin unraisableexception) appelle gc.collect()
+# dans son propre pytest_unconfigure : ces fenêtres y sont détruites et le
+# processus plante (segfault, code 139) APRÈS le dernier test — constaté sur
+# la CI de l'App Comptoir, invisible sous Windows. Quand Qt a été chargé, on
+# gèle donc les objets (gc.freeze : gc.collect() les ignore) puis on quitte
+# sans finaliser l'interpréteur, en gardant le code de sortie de pytest.
+# Sans Qt (PySide6 absent), rien ne change.
+
+_exit_status = None
+
+
+def _qt_loaded():
+    return "PySide6.QtWidgets" in sys.modules
+
+
+def pytest_sessionfinish(session, exitstatus):
+    global _exit_status
+    if _qt_loaded():
+        _exit_status = int(exitstatus)
+        gc.freeze()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    if _exit_status is None:
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_exit_status)

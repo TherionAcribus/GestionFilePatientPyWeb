@@ -1,7 +1,7 @@
 """Code PIN et menu de maintenance (Qt), affichés par-dessus la borne.
 
 Vrai Qt (plateforme « offscreen », sans écran). Ignoré quand PySide6 n'est
-pas installé (CI)."""
+pas installé (la CI l'installe : voir requirements-dev.txt)."""
 
 import os
 

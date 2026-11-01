@@ -26,19 +26,36 @@ jobs:
   # Les tests tournent SANS matériel : conftest.py stub escpos/pyusb et le
   # découplage matériel de Printer (device_factory) fournit une fausse
   # imprimante. `requests` (dépendance d'exécution) est requis pour importer
-  # le module `printer` ; il est inclus dans requirements-dev.txt.
+  # le module `printer` ; il est inclus dans requirements-dev.txt, avec Qt
+  # (PySide6-Essentials) pour les tests du code PIN / menu de maintenance,
+  # exécutés en vrai Qt hors écran.
   test:
     name: tests (pytest)
     runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      # Bibliothèques système des greffons Qt (mode « offscreen »).
+      - name: Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
+      # Garde-fou : sans Qt utilisable, les tests Qt seraient IGNORÉS en
+      # silence (pytest.importorskip) et la CI resterait verte sans eux.
+      - name: Check Qt is usable
+        run: >-
+          python -c "from PySide6.QtWidgets import QApplication;
+          QApplication([]); print('Qt OK')"
+      # -rs : la raison de chaque test ignoré apparaît dans le journal.
       - name: Run pytest
-        run: pytest -q
+        run: pytest -q -rs
 
   # --- Analyse de sécurité (advisory : n'échoue pas le build) --------------
   # bandit (SAST) et pip-audit (CVE des dépendances) sont exécutés en mode

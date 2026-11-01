@@ -92,6 +92,14 @@ _RENDERER_STATUS_LABELS = {
 LINK_PROBE_PERIOD = 10       # s entre deux sondes
 LINK_PROBE_TIMEOUT = 3       # s max par sonde
 LINK_PROBE_MISSES = 2        # échecs consécutifs avant de déclarer la coupure
+# Cible de la sonde : /healthz (réponse fixe, sans base ni session). Avant :
+# /patient, que le serveur rendait EN ENTIER (langues, traductions, cookie
+# de session) toutes les 10 s par borne quand la connexion patient n'est pas
+# exigée.
+LINK_PROBE_PATH = "/healthz"
+# Codes du proxy devant un serveur arrêté (Coolify, nginx…) : le serveur
+# n'est pas joignable, même si « quelqu'un » a répondu.
+LINK_PROBE_DOWN_STATUSES = (502, 503, 504)
 
 # Touche de maintenance (maintenance_pin.MAINTENANCE_KEY) : l'éditeur ouvert
 # depuis une borne en service se ferme seul après ce délai sans clavier ni
@@ -712,7 +720,11 @@ class WebViewClient:
                 logger.exception("Erreur inattendue dans la surveillance de page.")
 
     def _check_server_link(self):
-        """Une itération de la sonde : HEAD /patient, délai court.
+        """Une itération de la sonde : HEAD /healthz, délai court.
+
+        Joignable = une réponse du serveur lui-même : erreur réseau ou
+        502/503/504 du proxy = coupure. Un serveur ancien sans /healthz
+        (404/405) répond quand même : joignable.
 
         La transition up->down exige ``LINK_PROBE_MISSES`` échecs
         consécutifs (un paquet perdu ne fait pas clignoter l'écran) ; le
@@ -721,9 +733,9 @@ class WebViewClient:
         if session is None or not self.base_url:
             return
         try:
-            session.head(f"{self.base_url}/patient",
-                         timeout=LINK_PROBE_TIMEOUT)
-            alive = True
+            response = session.head(f"{self.base_url}{LINK_PROBE_PATH}",
+                                    timeout=LINK_PROBE_TIMEOUT)
+            alive = response.status_code not in LINK_PROBE_DOWN_STATUSES
         except Exception:
             alive = False
         if alive:

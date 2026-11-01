@@ -574,6 +574,45 @@ def test_link_probe_detects_cut_and_recovery():
                for s in client.window.js_scripts)
 
 
+
+def test_link_probe_vise_healthz():
+    """La sonde interroge /healthz (réponse fixe) et non /patient, que le
+    serveur rendait en entier toutes les 10 s par borne."""
+    client = _bare_client()
+    client.session = _FakeSession(_FakeResponse(200, {}))
+
+    client._check_server_link()
+
+    assert [c["url"] for c in client.session.calls] == [
+        "http://127.0.0.1:5000/healthz"]
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_link_probe_proxy_devant_un_serveur_arrete(status):
+    """Le proxy répond, pas le serveur : c'est une coupure."""
+    client = _bare_client()
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client.session = _FakeSession(_FakeResponse(status, {}))
+
+    client._check_server_link()
+    client._check_server_link()
+
+    assert client._link_alive is False
+    assert [e[0] for e in client.printer_api.events] == ["kiosk_link_lost"]
+
+
+@pytest.mark.parametrize("status", [200, 404, 405, 401])
+def test_link_probe_serveur_qui_repond_reste_joignable(status):
+    """404/405 : serveur ancien sans /healthz, mais qui répond."""
+    client = _bare_client()
+    client.session = _FakeSession(_FakeResponse(status, {}))
+
+    for _ in range(3):
+        client._check_server_link()
+
+    assert client._link_alive is True
+    assert client.printer_api.events == []
+
 # --- Sonde DOM : journal non inondé ----------------------------------------
 
 class _FakeJavascriptException(Exception):

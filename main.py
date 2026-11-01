@@ -12,6 +12,7 @@ import requests
 import webview
 from requests.exceptions import RequestException
 
+import crash_guard
 import desktop_integration
 import logging_config
 import maintenance_pin
@@ -1531,6 +1532,10 @@ if __name__ == '__main__':
     # pendant le chargement de la configuration. Le niveau est ajusté ensuite
     # selon le réglage debug.
     logging_config.setup_logging()
+    # Exe sans console : sans cette capture, une erreur non prévue (slot Qt,
+    # thread d'impression, fenêtre Tk, plantage natif) ne laissait aucune
+    # trace dans borne.log (cf. crash_guard).
+    crash_guard.install(log_dir=logging_config.default_log_dir())
 
     if '--config' in sys.argv:
         logger.info("Ouverture de l'éditeur de configuration (--config).")

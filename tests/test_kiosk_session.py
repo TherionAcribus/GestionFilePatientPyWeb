@@ -645,3 +645,150 @@ def test_dom_probe_thread_runs_the_probe_body():
     while client._dom_probe_pending and time.monotonic() < deadline:
         time.sleep(0.01)
     assert client._dom_probe_pending is False
+
+
+# --- Moteur d'affichage arrêté (renderProcessTerminated) ---------------------
+
+class _FakeStatus:
+    def __init__(self, name):
+        self.name = name
+
+
+def _renderer_client(operational=True):
+    client = _bare_client()
+    client.operational = operational
+    client.connected = operational
+    client._window_ready.set()
+    client._patient_page_shown = True
+    client._page_watchdog_stop = threading.Event()
+    client._last_renderer_recovery = None
+    client._config_error = False
+    client._config_errors = []
+    client._diagnosis_tracker = main.DiagnosisTracker()
+    client._displayed_diagnosis = None
+    client.window = _FakeWindow("http://127.0.0.1:5000/patient")
+    client.session = _FakeSession(_FakeResponse(
+        200, {"login_url": "http://127.0.0.1:5000/patient/kiosk_login/neuf"}))
+    return client
+
+
+def test_moteur_plante_page_patient_rechargee_avec_ticket_neuf():
+    client = _renderer_client()
+    client._dom_probe_pending = True     # sonde partie vers le moteur mort
+
+    client._recover_after_renderer_crash("plantage, code -11")
+
+    assert client.window.loaded_urls == [
+        "http://127.0.0.1:5000/patient/kiosk_login/neuf"]
+    assert client._dom_probe_pending is False
+    code, message, is_error = client.printer_api.events[0]
+    assert code == "kiosk_renderer_crash" and is_error is True
+    assert "plantage, code -11" in message
+
+
+def test_moteur_plante_ecran_hors_ligne_recharge():
+    client = _renderer_client(operational=False)
+
+    client._recover_after_renderer_crash("processus tué, code 1")
+
+    assert client.window.loaded_urls == []
+    assert len(client.window.loaded_html) == 1
+    assert "hors ligne" in client.window.loaded_html[0].lower()
+
+
+def test_moteur_plante_ecran_configuration_invalide_recharge():
+    client = _renderer_client(operational=False)
+    client._config_error = True
+    client._config_errors = ["URL du serveur invalide"]
+
+    client._recover_after_renderer_crash("plantage, code 5")
+
+    assert "URL du serveur invalide" in client.window.loaded_html[0]
+    assert client.window.loaded_urls == []
+
+
+def test_plantages_en_serie_espaces():
+    client = _renderer_client()
+    now = [1000.0]
+    waits = []
+    client._page_watchdog_stop = type("Stop", (), {
+        "wait": lambda _self, s: waits.append(round(s, 1)) or False})()
+
+    client._recover_after_renderer_crash("plantage", clock=lambda: now[0])
+    now[0] += 3
+    client._recover_after_renderer_crash("plantage", clock=lambda: now[0])
+
+    assert waits == [main.RENDERER_RECOVERY_MIN_INTERVAL - 3]
+    assert len(client.window.loaded_urls) == 2
+
+
+def test_arret_de_la_borne_pendant_l_attente_annule_la_reprise():
+    client = _renderer_client()
+    client._last_renderer_recovery = time.monotonic()
+    client._page_watchdog_stop.set()
+
+    client._recover_after_renderer_crash("plantage")
+
+    assert client.window.loaded_urls == []
+    assert client.printer_api.events == []
+
+
+def test_signal_qt_lance_la_reprise_hors_du_fil_qt(monkeypatch):
+    client = _renderer_client()
+    done = threading.Event()
+    seen = []
+
+    def recover(description):
+        seen.append((description, threading.current_thread().name))
+        done.set()
+
+    monkeypatch.setattr(client, "_recover_after_renderer_crash", recover)
+    client._on_render_process_terminated(_FakeStatus("CrashedTerminationStatus"), -11)
+
+    assert done.wait(2)
+    assert seen == [("plantage, code -11", "reprise-affichage")]
+
+
+_REAL_RENDERER_CRASH = r"""
+import sys, threading, types
+sys.path.insert(0, sys.argv[1])
+from PySide6.QtWebEngineWidgets import QWebEngineView  # avant QApplication
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtWidgets import QApplication
+import main
+
+app = QApplication([])
+view = QWebEngineView()
+client = main.WebViewClient.__new__(main.WebViewClient)
+client.window = types.SimpleNamespace(native=types.SimpleNamespace(webview=view))
+recovered = []
+def recover(description):          # appelé hors du fil Qt
+    recovered.append(description)
+client._recover_after_renderer_crash = recover
+poll = QTimer()
+poll.timeout.connect(lambda: recovered and app.quit())
+poll.start(100)
+client._install_renderer_watch()
+view.setHtml("<p>borne</p>", QUrl("https://kiosk.example/"))
+QTimer.singleShot(1500, lambda: view.load(QUrl("chrome://crash")))
+QTimer.singleShot(20000, app.quit)
+app.exec()
+print("RECOVERED:" + "|".join(recovered), flush=True)
+"""
+
+
+def test_vrai_moteur_qt_plante_reprise_declenchee():
+    """Bout en bout avec le vrai Qt WebEngine : chrome://crash fait tomber
+    le processus de rendu, le signal branché par _install_renderer_watch
+    déclenche la reprise. Processus séparé : Qt WebEngine doit être chargé
+    avant toute QApplication (les autres tests Qt en créent une)."""
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    import subprocess
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    result = subprocess.run(
+        [sys.executable, "-c", _REAL_RENDERER_CRASH, root],
+        capture_output=True, text=True, timeout=60, env=env, check=False)
+    line = [ln for ln in result.stdout.splitlines() if ln.startswith("RECOVERED:")]
+    assert line, result.stdout + result.stderr
+    assert line[0].startswith("RECOVERED:plantage, code ")

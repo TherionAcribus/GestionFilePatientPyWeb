@@ -69,6 +69,21 @@ PATIENT_PAGE_RECOVERY_INTERVAL = 30
 # retour, la page est rechargée de force.
 DOM_PROBE_TIMEOUT = 90
 
+# Plantage du moteur d'affichage (processus de rendu Qt WebEngine : manque de
+# mémoire, pilote graphique, page qui le fait tomber) : Qt le signale aussitôt
+# (renderProcessTerminated) et la page est rechargée sans attendre la sonde
+# DOM (jusqu'à ~2 min d'écran vide ou figé). Plantages en série : au plus un
+# rechargement par intervalle, pour ne pas tourner en boucle serrée.
+RENDERER_RECOVERY_MIN_INTERVAL = 10
+
+#: Causes d'arrêt du moteur d'affichage (QWebEnginePage.RenderProcessTerminationStatus).
+_RENDERER_STATUS_LABELS = {
+    "NormalTerminationStatus": "arrêt",
+    "AbnormalTerminationStatus": "arrêt anormal",
+    "CrashedTerminationStatus": "plantage",
+    "KilledTerminationStatus": "processus tué",
+}
+
 # Sonde de liaison réseau, INDÉPENDANTE du navigateur : une liaison Wi-Fi
 # morte ne produit souvent aucune erreur immédiate (l'interface garde son
 # IP, les paquets partent dans le vide) — le socket patient ne l'apprend
@@ -193,6 +208,8 @@ class WebViewClient:
         # evaluate_js « bloquant » conservé avant le reroutage CSP : run_js
         # (fire-and-forget) ne prouve pas que le moteur répond.
         self._evaluate_js_blocking = None
+        # Dernier rechargement après un plantage du moteur d'affichage.
+        self._last_renderer_recovery = None
         self._init_stop = threading.Event()
         self._init_thread = None
         # URL de connexion signée (ticket borne) obtenue auprès du serveur ;
@@ -327,6 +344,8 @@ class WebViewClient:
         self.window.events.before_show += self._install_navigation_guard
         # Même évènement (exécuté dans le fil Qt) : touches F10 et F11.
         self.window.events.before_show += self._install_kiosk_shortcuts
+        # … et surveillance du moteur d'affichage (rechargement immédiat).
+        self.window.events.before_show += self._install_renderer_watch
         # Toute fermeture de la fenêtre (Alt+F4, croix hors plein écran…)
         # passe par la maintenance, comme F10 : jamais de borne arrêtée en
         # silence.
@@ -1011,6 +1030,70 @@ class WebViewClient:
             native.request_interceptor = guarded
         except Exception:
             logger.exception("Installation du garde-navigation impossible.")
+
+    def _install_renderer_watch(self):
+        """Branche le signal Qt « moteur d'affichage arrêté » de la page.
+
+        Appelé par ``before_show`` (fil Qt). pywebview garde sa page Qt dans
+        ``native.webview.page()`` pour toute la vie de la fenêtre."""
+        try:
+            page = self.window.native.webview.page()
+            page.renderProcessTerminated.connect(
+                self._on_render_process_terminated)
+        except Exception:
+            # FRONTIÈRE Qt : sans ce signal, la sonde DOM reste le filet.
+            logger.exception("Surveillance du moteur d'affichage impossible.")
+            return
+        # Référence Python conservée (comme les raccourcis).
+        self.window.native.renderer_watch_page = page
+
+    def _on_render_process_terminated(self, status, exit_code):
+        """Signal Qt (fil Qt) : le processus de rendu s'est arrêté. Le
+        rechargement (ticket de session : réseau) part dans un thread pour
+        ne pas bloquer le fil Qt."""
+        name = getattr(status, "name", str(status))
+        description = (f"{_RENDERER_STATUS_LABELS.get(name, name)}, "
+                       f"code {exit_code}")
+        logger.error("Moteur d'affichage arrêté (%s) : rechargement de la "
+                     "page.", description)
+        threading.Thread(target=self._recover_after_renderer_crash,
+                         args=(description,), name="reprise-affichage",
+                         daemon=True).start()
+
+    def _recover_after_renderer_crash(self, description, clock=time.monotonic):
+        """Recharge l'écran que le moteur affichait : page patient (ticket
+        frais), écran « Borne hors ligne » ou écran de configuration
+        invalide. Au plus une fois par ``RENDERER_RECOVERY_MIN_INTERVAL``."""
+        last = self._last_renderer_recovery
+        if last is not None:
+            wait_s = RENDERER_RECOVERY_MIN_INTERVAL - (clock() - last)
+            if wait_s > 0 and self._page_watchdog_stop.wait(wait_s):
+                return      # borne en cours d'arrêt
+        self._last_renderer_recovery = clock()
+        self.printer_api.report_event(
+            "kiosk_renderer_crash",
+            f"Moteur d'affichage arrêté ({description}) : page rechargée",
+            is_error=True)
+        # Une sonde DOM partie vers le moteur mort ne reviendra jamais.
+        self._dom_probe_pending = False
+        if self._config_error:
+            self._load_local_screen(
+                ui_assets.build_config_error_html(self._config_errors))
+        elif self.is_operational():
+            self._force_patient_reload()
+        else:
+            diagnosis = self._diagnosis_tracker.visible(clock())
+            self._displayed_diagnosis = diagnosis
+            self._load_local_screen(ui_assets.offline_html(
+                diagnosis.screen_text() if diagnosis else None))
+
+    def _load_local_screen(self, html):
+        try:
+            self.window.load_html(html)
+        except Exception:
+            # Frontière pywebview : la sonde/le watchdog réessaieront.
+            logger.exception("Écran local non rechargé après l'arrêt du "
+                             "moteur d'affichage.")
 
     def _install_kiosk_shortcuts(self):
         """Pose les touches F10 (maintenance) et F11 (plein écran) sur la

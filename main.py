@@ -17,6 +17,7 @@ import desktop_integration
 import logging_config
 import maintenance_pin
 import pin_lockout
+import single_instance
 import system_power
 import ui_assets
 from config import Config, redact_url_for_log, resolve_server_url, url_is_within_base
@@ -88,6 +89,11 @@ MAINTENANCE_PRINT_WAIT_S = 30
 MAINTENANCE_OPTION = "--maintenance"
 # Délai avant d'ouvrir ce menu : la fenêtre de la borne s'affiche d'abord.
 MAINTENANCE_AT_START_DELAY_MS = 1500
+
+# Posée par _restart_kiosk dans l'environnement de la borne relancée : celle-ci
+# attend que l'ancienne libère le verrou d'instance (sous Windows, la nouvelle
+# démarre avant la fin de l'ancienne). Retirée au démarrage.
+RESTART_ENV = "FLOWELIS_BORNE_RESTART"
 
 
 def _jittered_init_delay(delay):
@@ -1460,6 +1466,7 @@ def _restart_kiosk(extra=()):
     lancement neuf au lieu de réutiliser le dossier extrait de celui-ci."""
     command = _restart_command(extra=extra)
     env = dict(os.environ)
+    env[RESTART_ENV] = "1"
     if getattr(sys, "frozen", False):
         env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     logger.info("Relance de la borne.")
@@ -1475,6 +1482,31 @@ def _restart_kiosk(extra=()):
         # Code non nul : un superviseur (systemd Restart=on-failure) relance.
         sys.exit(1)
     sys.exit(0)
+
+
+def _instance_config_path():
+    return Config().config_path
+
+
+def _acquire_kiosk_lock(environ=None):
+    """Verrou « borne en service » (single_instance) ; None si une autre
+    borne tourne déjà sur ce poste — un message le dit alors au technicien.
+
+    Après une relance volontaire (``RESTART_ENV``), on attend que l'ancienne
+    borne libère le verrou au lieu de renoncer aussitôt."""
+    environ = os.environ if environ is None else environ
+    restarted = environ.pop(RESTART_ENV, None) is not None
+    lock = single_instance.InstanceLock(
+        _instance_config_path() / single_instance.LOCK_FILENAME)
+    wait_s = single_instance.RESTART_WAIT_S if restarted else 0.0
+    if lock.acquire(wait_s=wait_s):
+        return lock
+    pid = lock.holder_pid()
+    logger.warning("Borne déjà en service sur ce poste%s : second lancement "
+                   "annulé.", f" (PID {pid})" if pid else "")
+    _show_notice(single_instance.ALREADY_RUNNING_TITLE,
+                 single_instance.ALREADY_RUNNING_TEXT)
+    return None
 
 
 def _prepare_client():
@@ -1557,10 +1589,18 @@ if __name__ == '__main__':
     crash_guard.install(log_dir=logging_config.default_log_dir())
 
     if '--config' in sys.argv:
+        if single_instance.editing_blocked(
+                _instance_config_path(), _show_notice,
+                "Configuration de la borne"):
+            sys.exit(1)
         logger.info("Ouverture de l'éditeur de configuration (--config).")
         sys.exit(0 if _launch_config_editor() else 1)
 
     if '--setup' in sys.argv:
+        if single_instance.editing_blocked(
+                _instance_config_path(), _show_notice,
+                "Assistant d'installation"):
+            sys.exit(1)
         logger.info("Ouverture de l'assistant d'installation (--setup).")
         sys.exit(0 if _run_setup(kiosk_follows=False) is not None else 1)
 
@@ -1578,6 +1618,15 @@ if __name__ == '__main__':
         sys.exit(0)
 
     logger.info("Démarrage de la borne Flowelis.")
+
+    # Une seule borne par poste : un second lancement (menu des
+    # applications, raccourci…) s'arrête ici, AVANT d'ouvrir une fenêtre ou
+    # l'imprimante. Code 0 : rien d'anormal à relancer. Le verrou reste
+    # détenu jusqu'à la fin du processus (libéré par le système, même sur
+    # un plantage).
+    _instance_lock = _acquire_kiosk_lock()
+    if _instance_lock is None:
+        sys.exit(0)
 
     # Binaire de release : il crée lui-même ses raccourcis (démarrage
     # automatique, menu, bureau) — install.sh n'est pas passé par là. Pas

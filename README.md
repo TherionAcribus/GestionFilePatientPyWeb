@@ -334,6 +334,15 @@ Le délai évite d'alarmer quand le réseau arrive quelques secondes après la
 borne. La borne continue de réessayer dans tous les cas : corriger le serveur
 suffit, sans toucher à la borne.
 
+**Une seule borne par poste.** Un second lancement (menu des applications,
+raccourci) s'arrête aussitôt avec le message « Borne déjà en service » : deux
+bornes se disputeraient l'imprimante et enverraient des états contradictoires
+au serveur. De même, la configuration et l'assistant lancés seuls (raccourcis,
+`--config`, `--setup`) refusent de s'ouvrir pendant que la borne tourne : passer
+par F10 › « Ouvrir la configuration ». Le verrou (`borne.lock`, dossier de
+configuration) est libéré par le système à la fin de la borne, même après un
+plantage : rien à nettoyer.
+
 ### 5.1 Démarrage automatique — Linux
 
 **Binaire de release : rien à faire.** À chaque lancement, le binaire crée ou

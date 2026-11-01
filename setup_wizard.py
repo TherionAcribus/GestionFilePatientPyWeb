@@ -20,6 +20,7 @@ from tkinter import messagebox, ttk
 
 import logging_config
 import setup_logic
+import single_instance
 from config import Config
 from config_editor import (
     _DANGER_COLOR,
@@ -27,6 +28,7 @@ from config_editor import (
     _cancel_pending_callbacks,
     probe_printer,
     probe_server,
+    show_notice,
 )
 from maintenance_pin import MAINTENANCE_KEY, PIN_MAX_LENGTH, PIN_MIN_LENGTH
 from setup_logic import STEPS, TEST_FAILED, TEST_NOT_RUN, TEST_OK
@@ -503,6 +505,9 @@ def run_setup_wizard(kiosk_follows=False) -> str:
 
 if __name__ == "__main__":
     logging_config.setup_logging()
+    if single_instance.editing_blocked(
+            Config().config_path, show_notice, "Assistant d'installation"):
+        raise SystemExit(1)
     logger.info("Ouverture de l'assistant d'installation.")
     if run_setup_wizard() == RESULT_ADVANCED:
         import config_editor

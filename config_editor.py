@@ -11,6 +11,7 @@ from tkinter import messagebox, ttk
 import editor_logic
 import logging_config
 import maintenance_pin
+import single_instance
 from config import Config, Settings, resolve_server_url
 from maintenance_pin import MAINTENANCE_KEY
 
@@ -842,6 +843,11 @@ def _bring_to_front(window):
 
 if __name__ == "__main__":
     logging_config.setup_logging()
+    # Raccourci « Configuration » du bureau pendant que la borne tourne :
+    # passer par F10 (cf. single_instance.editing_blocked).
+    if single_instance.editing_blocked(
+            Config().config_path, show_notice, "Configuration de la borne"):
+        raise SystemExit(1)
     logger.info("Ouverture de l'éditeur de configuration.")
     app = ConfigEditor()
     app.mainloop()

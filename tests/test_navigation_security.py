@@ -329,3 +329,29 @@ def test_editor_probe_resolves_relative_login_url_and_redacts_errors(monkeypatch
     assert ok is False
     assert "TICKET_SECRET" not in message
     assert "kiosk_login" not in message
+
+
+def test_redacting_filter_masks_traceback_text():
+    """Le formateur ajoute la trace d'erreur APRÈS les filtres : sans
+    traitement dédié, un secret dans le message d'une exception (ou une URL
+    signée) partait en clair dans borne.log."""
+    redactor = logging_config.RedactingFilter()
+    redactor.register_secret("SECRET_APPLICATIF")
+    try:
+        raise RuntimeError("refus pour SECRET_APPLICATIF token=abcdefgh12345")
+    except RuntimeError:
+        record = logging.LogRecord("borne.test", logging.ERROR, __file__, 1,
+                                   "échec", None, sys.exc_info())
+    redactor.filter(record)
+    text = logging.Formatter().format(record)
+    assert "SECRET_APPLICATIF" not in text
+    assert "abcdefgh12345" not in text
+    assert "RuntimeError" in text
+
+
+def test_redacting_filter_masks_stack_info():
+    redactor = logging_config.RedactingFilter()
+    redactor.register_secret("TICKET_SESSION")
+    record = logging.makeLogRecord({"msg": "pile", "stack_info": "appel avec TICKET_SESSION"})
+    redactor.filter(record)
+    assert "TICKET_SESSION" not in logging.Formatter().format(record)

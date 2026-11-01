@@ -99,6 +99,7 @@ class RedactingFilter(logging.Filter):
         super().__init__()
         self._secrets = set()
         self._lock = threading.Lock()
+        self._exc_formatter = logging.Formatter()
 
     def register_secret(self, value):
         if isinstance(value, str) and len(value) >= _MIN_SECRET_LEN:
@@ -124,6 +125,16 @@ class RedactingFilter(logging.Filter):
             if redacted != message:
                 record.msg = redacted
                 record.args = ()
+            # Trace d'erreur (logger.exception, exc_info=True) : le formateur
+            # l'ajoute APRÈS les filtres, à partir de exc_text s'il est déjà
+            # rempli. On la produit donc ici pour la masquer aussi — le message
+            # d'une exception peut contenir un jeton, un ticket ou une URL signée.
+            if record.exc_info and not record.exc_text:
+                record.exc_text = self._exc_formatter.formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = self._redact(record.exc_text)
+            if record.stack_info:
+                record.stack_info = self._redact(record.stack_info)
         except Exception:
             # La journalisation ne doit jamais casser le flux applicatif.
             pass
